@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# agent-team runtime state (run record, worktrees, lock file)
+.agent-team/
+
+# Local tooling state, never committed
+.claude/
+.playwright-mcp/
+graphify-out/
+.DS_Store
