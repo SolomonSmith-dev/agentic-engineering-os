@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install project and dev dependencies
+        run: uv sync --locked --group dev
+
+      - name: Run tests
+        run: uv run pytest -q
+
+      - name: Prove the console script installs as a tool
+        run: |
+          uv tool install --force .
+          agent-team --version | tee /tmp/version.txt
+          /usr/bin/grep -qx "agent-team 0.0.1" /tmp/version.txt
+
+      - name: Prove the sandbox runtime installs (macOS only)
+        if: runner.os == 'macOS'
+        run: |
+          npm install -g @anthropic-ai/sandbox-runtime
+          srt --version
