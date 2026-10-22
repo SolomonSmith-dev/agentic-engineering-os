@@ -19,7 +19,7 @@ Python 3.12 via uv. `typer` CLI named `agent-team`, `pydantic` schemas, stdlib `
 ## Rules
 
 - One squash-merged PR per build-order step. `main` is protected; never push to it.
-- Commits carry `Co-Authored-By` and `Claude-Session` trailers.
+- No `Co-Authored-By`, `Claude-Session` or "Generated with Claude Code" lines in commits, PRs or docs.
 - Never touch `~/.claude` or another repo's config. Step 8 (`configure`) is the only thing that writes to a target repo, and only where it is pointed.
 - Runtime state lives in `.agent-team/` inside the target repo and is gitignored.
 - Never persist secrets. Auth state is reported as present or absent, never by value.

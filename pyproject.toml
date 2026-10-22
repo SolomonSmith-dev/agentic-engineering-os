@@ -9,6 +9,7 @@ authors = [{ name = "Solomon Smith" }]
 dependencies = [
     "typer>=0.12",
     "pydantic>=2.7",
+    "pyyaml>=6",
 ]
 
 [project.urls]
@@ -18,7 +19,10 @@ Repository = "https://github.com/SolomonSmith-dev/agentic-engineering-os"
 agent-team = "agent_team.cli:app"
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = [
+    "jsonschema>=4.23",
+    "pytest>=8",
+]
 
 [build-system]
 requires = ["hatchling"]
