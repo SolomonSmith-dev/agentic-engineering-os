@@ -1,0 +1,49 @@
+{
+  "host": {
+    "os": "Linux",
+    "os_version": "6.8.0-1021-azure",
+    "arch": "x86_64",
+    "python": "3.12.3",
+    "uv": "0.11.2"
+  },
+  "runtimes": [
+    {
+      "name": "claude",
+      "present": false,
+      "version": null
+    },
+    {
+      "name": "srt",
+      "present": false,
+      "version": null
+    },
+    {
+      "name": "gh",
+      "present": false,
+      "version": null
+    },
+    {
+      "name": "git",
+      "present": true,
+      "version": "2.43.0"
+    }
+  ],
+  "auth": [
+    {
+      "name": "claude",
+      "state": "absent"
+    },
+    {
+      "name": "gh",
+      "state": "absent"
+    }
+  ],
+  "egress": {
+    "url": "https://api.anthropic.com",
+    "reachable": false
+  },
+  "managed_settings": {
+    "path": "/etc/claude-code/managed-settings.json",
+    "present": false
+  }
+}
