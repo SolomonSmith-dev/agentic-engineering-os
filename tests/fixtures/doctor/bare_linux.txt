@@ -1,0 +1,23 @@
+host
+  os      Linux 6.8.0-1021-azure
+  arch    x86_64
+  python  3.12.3
+  uv      0.11.2
+
+runtimes
+  claude  not found
+  srt     not found
+  gh      not found
+  git     2.43.0
+
+auth
+  claude  absent
+  gh      absent
+
+egress
+  url     https://api.anthropic.com
+  result  unreachable
+
+managed settings
+  state   absent
+  path    /etc/claude-code/managed-settings.json

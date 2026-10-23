@@ -7,6 +7,7 @@ import typer
 
 from agent_team import __version__
 from agent_team.canonical import validate_tree
+from agent_team.doctor import build_report, render_table
 from agent_team.schemas import SCHEMAS, json_schema
 
 app = typer.Typer(
@@ -57,6 +58,18 @@ def validate(
         return
     typer.echo(f"failed: {len(report.problems)} problem(s) in {summary} under {path}", err=True)
     raise typer.Exit(code=1)
+
+
+@app.command()
+def doctor(
+    as_json: bool = typer.Option(False, "--json", help="Print the report as JSON instead of a table."),
+) -> None:
+    """Report host, runtimes, auth state, egress and managed settings. Read-only."""
+    report = build_report()
+    if as_json:
+        typer.echo(report.model_dump_json(indent=2))
+        return
+    typer.echo(render_table(report))
 
 
 schema_app = typer.Typer(help="Inspect and export the canonical JSON Schemas.", no_args_is_help=True)

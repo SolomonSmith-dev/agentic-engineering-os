@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from agent_team.schemas.agent import AgentSpec, Capabilities
+from agent_team.schemas.doctor import DoctorReport
 from agent_team.schemas.policy import PolicySpec, RedactionRule
 from agent_team.schemas.skill import SkillSpec
 from agent_team.schemas.tool import Implementation, ToolSpec
@@ -38,6 +39,7 @@ __all__ = [
     "SCHEMAS",
     "AgentSpec",
     "Capabilities",
+    "DoctorReport",
     "Implementation",
     "PolicySpec",
     "RedactionRule",

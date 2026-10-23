@@ -1,0 +1,49 @@
+{
+  "host": {
+    "os": "Darwin",
+    "os_version": "15.4",
+    "arch": "arm64",
+    "python": "3.12.9",
+    "uv": "0.11.2"
+  },
+  "runtimes": [
+    {
+      "name": "claude",
+      "present": true,
+      "version": "2.1.305"
+    },
+    {
+      "name": "srt",
+      "present": true,
+      "version": "0.0.42"
+    },
+    {
+      "name": "gh",
+      "present": true,
+      "version": "2.102.0"
+    },
+    {
+      "name": "git",
+      "present": true,
+      "version": "2.56.0"
+    }
+  ],
+  "auth": [
+    {
+      "name": "claude",
+      "state": "present"
+    },
+    {
+      "name": "gh",
+      "state": "present"
+    }
+  ],
+  "egress": {
+    "url": "https://api.anthropic.com",
+    "reachable": true
+  },
+  "managed_settings": {
+    "path": "/Library/Application Support/ClaudeCode/managed-settings.json",
+    "present": true
+  }
+}

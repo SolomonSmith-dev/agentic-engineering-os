@@ -1,0 +1,23 @@
+host
+  os      Darwin 15.4
+  arch    arm64
+  python  3.12.9
+  uv      0.11.2
+
+runtimes
+  claude  2.1.305
+  srt     0.0.42
+  gh      2.102.0
+  git     2.56.0
+
+auth
+  claude  present
+  gh      present
+
+egress
+  url     https://api.anthropic.com
+  result  reachable
+
+managed settings
+  state   present
+  path    /Library/Application Support/ClaudeCode/managed-settings.json
