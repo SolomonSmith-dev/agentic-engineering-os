@@ -2,7 +2,7 @@
 
 `agent-team` runs Claude Code workers and an independent reviewer inside sandboxed git worktrees, records every run in SQLite, and gates pull requests on the reviewer's verdict.
 
-Status: build-order step 3 of 15. The CLI answers `--version`, checks the host (`agent-team doctor`), validates `canonical/` against the pydantic schemas (`agent-team validate`) and exports them as JSON Schema (`agent-team schema export`). See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the target design and build order.
+Status: build-order step 4 of 15. The CLI answers `--version`, checks the host (`agent-team doctor`), reads the run record (`agent-team trace`), validates `canonical/` against the pydantic schemas (`agent-team validate`) and exports them as JSON Schema (`agent-team schema export`). See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the target design and build order.
 
 ## Install
 
@@ -21,6 +21,18 @@ Pin to a tag once one exists (`@0.1.0` lands after build-order step 6).
 agent-team doctor
 agent-team doctor --json
 ```
+
+## Run record and trace
+
+Every run is recorded in `.agent-team/runs.db` inside the target repository: one row per run (state, start and end time, cost so far, model class, worktree, outcome), one per state transition, and one per tool call (tool, redacted argument summary, result, duration, cost). The store refuses to open unless git already ignores `.agent-team/`, and it writes nothing outside that directory. Tool-call arguments are redacted and truncated before they are stored.
+
+```bash
+agent-team trace                 # recent runs
+agent-team trace <run-id>        # state transitions with elapsed time and cost
+agent-team trace <run-id> --calls
+```
+
+No agent writes to the record yet; the runtime adapter (build-order step 6) is its first writer.
 
 ## Canonical files
 

@@ -8,6 +8,7 @@ import typer
 from agent_team import __version__
 from agent_team.canonical import validate_tree
 from agent_team.doctor import build_report, render_table
+from agent_team.runs import RunStore, RunStoreError, UnknownRunError, render_run_list, render_trace
 from agent_team.schemas import SCHEMAS, json_schema
 
 app = typer.Typer(
@@ -70,6 +71,37 @@ def doctor(
         typer.echo(report.model_dump_json(indent=2))
         return
     typer.echo(render_table(report))
+
+
+@app.command()
+def trace(
+    run_id: str | None = typer.Argument(None, help="Run to show; omit to list recent runs."),
+    repo: Path = typer.Option(Path("."), "--repo", "-C", help="Target repository; defaults to the current directory."),
+    limit: int = typer.Option(20, "--limit", "-n", min=1, help="How many recent runs to list."),
+    calls: bool = typer.Option(False, "--calls", help="Also list every tool call (arguments are stored redacted)."),
+) -> None:
+    """Print a run's state transitions with elapsed time and cost, or list recent runs."""
+    try:
+        store = RunStore.open(repo, create=False)
+    except RunStoreError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    if store is None:
+        if run_id is not None:
+            typer.echo(f"error: no run {run_id!r}; no run record exists yet", err=True)
+            raise typer.Exit(code=1)
+        typer.echo("no runs recorded")
+        return
+    with store:
+        if run_id is None:
+            typer.echo(render_run_list(store.list_runs(limit)))
+            return
+        try:
+            run = store.get_run(run_id)
+        except UnknownRunError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        typer.echo(render_trace(run, store.transitions(run_id), store.tool_calls(run_id), show_calls=calls))
 
 
 schema_app = typer.Typer(help="Inspect and export the canonical JSON Schemas.", no_args_is_help=True)
