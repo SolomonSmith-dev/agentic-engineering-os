@@ -454,3 +454,36 @@ def test_trace_escapes_control_characters(repo: Path, clock: FakeClock) -> None:
         assert result.exit_code == 0, result.output
         assert not any(ch in result.stdout for ch in ("\x1b", "\x07", "\r", "\u009b"))
     assert "\\x1b[2J" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'password="unterminated-canary and more',
+        "--api-key 'never closed canary",
+        "password=abc\\def-canary",
+        'token=C:\\\\Users\\\\x\\\\canary.key',
+    ],
+)
+def test_redaction_without_closing_quote_or_with_backslash(text: str) -> None:
+    summary = summarize_args({"payload": text})
+    assert REDACTED in summary
+    assert "canary" not in summary
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'password="' + "a" * 200_000,
+        ('token="' + "b" * 50) * 5_000,
+        "secret " * 40_000,
+        "-----BEGIN RSA PRIVATE KEY-----" + "c" * 200_000,
+    ],
+)
+def test_redaction_is_bounded_on_adversarial_input(text: str) -> None:
+    import time
+
+    start = time.perf_counter()
+    summary = summarize_args({"payload": text})
+    assert time.perf_counter() - start < 1.0
+    assert len(summary) <= MAX_SUMMARY_CHARS

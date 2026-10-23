@@ -35,14 +35,20 @@ _TOKEN_SHAPES: tuple[re.Pattern[str], ...] = (
     re.compile(r"(?<=://)[^/\s:@]+:[^/\s@]+(?=@)"),  # user:password@ in URLs
 )
 
+# Longest string any pattern scans. Longer strings are cut first; the stored summary
+# is far shorter, so nothing past the cut is ever stored. It bounds every regex below.
+MAX_SCAN_CHARS = 8192
+
 # FOO_TOKEN=value, --api-key value, --password=value, "password": "value" and the
 # escaped \"password\":\"value\" form inside a string. A quoted value is redacted up
-# to its closing quote, so a value with spaces is not stored in part.
+# to its closing quote, or to the end of the line when the quote never closes. An
+# unquoted value runs to whitespace or a delimiter; a backslash does not end it.
 _ASSIGNMENT = re.compile(
     r"(?P<name>[A-Za-z0-9_\-]*(token|secret|passw(or)?d|passphrase|api[_-]?key|private[_-]?key|credential)"
     r"[A-Za-z0-9_\-]*)(?P<q1>\\?[\"']?)(?P<sep>\s*[=:]\s*|\s+)"
-    r"(?:(?P<quote>\\?[\"'])(?P<qvalue>.*?)(?P=quote)|(?P<value>[^\s\"',;&|\\]+))",
-    re.IGNORECASE | re.DOTALL,
+    r"(?:(?P<quote>\\?[\"'])(?P<qvalue>(?:(?!(?P=quote))[^\n]){0,%d})(?P<close>(?P=quote))?"
+    r"|(?P<value>[^\s\"',;&|]+))" % MAX_SCAN_CHARS,
+    re.IGNORECASE,
 )
 
 
@@ -51,7 +57,7 @@ def _redact_assignment(m: re.Match[str]) -> str:
     if m["quote"] is not None:
         if m["qvalue"] in ("", REDACTED):
             return m[0]
-        return f"{prefix}{m['quote']}{REDACTED}{m['quote']}"
+        return f"{prefix}{m['quote']}{REDACTED}{m['close'] or ''}"
     if m["value"] == REDACTED:
         return m[0]
     return f"{prefix}{REDACTED}"
@@ -59,6 +65,8 @@ def _redact_assignment(m: re.Match[str]) -> str:
 
 def redact_text(text: str, extra_patterns: Iterable[str] = ()) -> str:
     """Scrub token shapes, credential assignments and any extra policy patterns from one string."""
+    if len(text) > MAX_SCAN_CHARS:
+        text = text[:MAX_SCAN_CHARS] + "..."
     for pattern in _TOKEN_SHAPES:
         text = pattern.sub(REDACTED, text)
     text = _ASSIGNMENT.sub(_redact_assignment, text)
