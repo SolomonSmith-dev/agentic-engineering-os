@@ -414,3 +414,44 @@ def test_trace_refuses_unignored_repo(tmp_path: Path) -> None:
     result = runner.invoke(app, ["trace", "--repo", str(root)])
     assert result.exit_code == 2
     assert "not gitignored" in result.stderr
+
+
+# Security review follow-ups
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '{"password": "two words-canary"}',
+        '{\\"api_key\\":\\"escaped-canary\\"}',
+        "secret = 'quoted spaced canary'",
+        "--token \"flag-canary\"",
+    ],
+)
+def test_redaction_inside_serialized_strings(text: str) -> None:
+    summary = summarize_args({"payload": text})
+    assert REDACTED in summary
+    for fragment in ("two words-canary", "escaped-canary", "quoted spaced canary", "flag-canary"):
+        assert fragment not in summary
+
+
+def test_refuses_when_state_dir_is_tracked(repo: Path, clock: FakeClock) -> None:
+    state = repo / ".agent-team"
+    state.mkdir()
+    (state / "runs.db").write_bytes(b"")
+    git(repo, "add", "-f", ".agent-team/runs.db")
+    with pytest.raises(RunStoreError, match="tracked by git"):
+        RunStore.open(repo, clock=clock)
+
+
+def test_trace_escapes_control_characters(repo: Path, clock: FakeClock) -> None:
+    store = open_store(repo, clock)
+    store.start_run("bug-fix\x1b[2J", worktree_path="wt/\x1b]0;pwned\x07", run_id=RUN_A)
+    store.record_tool_call(RUN_A, "Bash\x1b[31m", {"command": "echo \u009b31m"}, "ok", duration_ms=1)
+    store.transition(RUN_A, "PLAN", note="clear\x1b[2Jscreen\rover")
+    store.close()
+    for argv in (["trace", "--repo", str(repo)], ["trace", RUN_A, "--calls", "--repo", str(repo)]):
+        result = runner.invoke(app, argv)
+        assert result.exit_code == 0, result.output
+        assert not any(ch in result.stdout for ch in ("\x1b", "\x07", "\r", "\u009b"))
+    assert "\\x1b[2J" in result.stdout

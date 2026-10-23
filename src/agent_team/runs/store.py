@@ -111,7 +111,15 @@ def repo_root(path: Path) -> Path:
 
 
 def check_state_dir_ignored(root: Path) -> None:
-    """Fail unless git ignores `.agent-team/` in `root`. Never edits `.gitignore` itself."""
+    """Fail unless git ignores `.agent-team/` in `root` and tracks nothing under it. Never edits git state."""
+    tracked = _git(root, "ls-files", "--", STATE_DIR)
+    if tracked.returncode != 0:
+        raise RunStoreError(f"git ls-files failed in {root}: {tracked.stderr.strip()}")
+    if tracked.stdout.strip():
+        raise RunStoreError(
+            f"{STATE_DIR}/ has files tracked by git in {root}; run 'git rm -r --cached {STATE_DIR}' "
+            "so the run record is never committed"
+        )
     result = _git(root, "check-ignore", "-q", "--no-index", f"{STATE_DIR}/{DB_NAME}")
     if result.returncode == 0:
         return

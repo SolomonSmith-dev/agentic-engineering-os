@@ -35,22 +35,33 @@ _TOKEN_SHAPES: tuple[re.Pattern[str], ...] = (
     re.compile(r"(?<=://)[^/\s:@]+:[^/\s@]+(?=@)"),  # user:password@ in URLs
 )
 
-# FOO_TOKEN=value, --api-key value, --password=value, "password": "value" inside a string.
+# FOO_TOKEN=value, --api-key value, --password=value, "password": "value" and the
+# escaped \"password\":\"value\" form inside a string. A quoted value is redacted up
+# to its closing quote, so a value with spaces is not stored in part.
 _ASSIGNMENT = re.compile(
     r"(?P<name>[A-Za-z0-9_\-]*(token|secret|passw(or)?d|passphrase|api[_-]?key|private[_-]?key|credential)"
-    r"[A-Za-z0-9_\-]*)(?P<sep>\s*[=:]\s*|\s+)(?P<quote>[\"']?)(?P<value>[^\s\"',;&|]+)",
-    re.IGNORECASE,
+    r"[A-Za-z0-9_\-]*)(?P<q1>\\?[\"']?)(?P<sep>\s*[=:]\s*|\s+)"
+    r"(?:(?P<quote>\\?[\"'])(?P<qvalue>.*?)(?P=quote)|(?P<value>[^\s\"',;&|\\]+))",
+    re.IGNORECASE | re.DOTALL,
 )
+
+
+def _redact_assignment(m: re.Match[str]) -> str:
+    prefix = f"{m['name']}{m['q1']}{m['sep']}"
+    if m["quote"] is not None:
+        if m["qvalue"] in ("", REDACTED):
+            return m[0]
+        return f"{prefix}{m['quote']}{REDACTED}{m['quote']}"
+    if m["value"] == REDACTED:
+        return m[0]
+    return f"{prefix}{REDACTED}"
 
 
 def redact_text(text: str, extra_patterns: Iterable[str] = ()) -> str:
     """Scrub token shapes, credential assignments and any extra policy patterns from one string."""
     for pattern in _TOKEN_SHAPES:
         text = pattern.sub(REDACTED, text)
-    text = _ASSIGNMENT.sub(
-        lambda m: f"{m['name']}{m['sep']}{m['quote']}{REDACTED}" if m["value"] != REDACTED else m[0],
-        text,
-    )
+    text = _ASSIGNMENT.sub(_redact_assignment, text)
     for extra in extra_patterns:
         text = re.sub(extra, REDACTED, text)
     return text

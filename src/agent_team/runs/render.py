@@ -1,6 +1,19 @@
 """Plain-text rendering for `agent-team trace` and the per-transition status line."""
 
+import re
+
 from agent_team.schemas.runs import RunRecord, StateTransition, ToolCallRecord
+
+# C0 and C1 control characters except tab, plus DEL. A stored note, path or
+# argument summary must never move the cursor or recolor the operator's terminal.
+_CONTROL = re.compile(r"[\x00-\x08\x0a-\x1f\x7f-\x9f]")
+
+
+def safe(text: str | None) -> str:
+    """Escape control characters in a stored string before it reaches the terminal."""
+    if text is None:
+        return "-"
+    return _CONTROL.sub(lambda m: m[0].encode("unicode_escape").decode("ascii"), text)
 
 
 def format_elapsed(seconds: float) -> str:
@@ -18,7 +31,7 @@ def status_line(t: StateTransition) -> str:
     """One line per state transition with elapsed time and cost so far."""
     move = t.to_state if t.from_state is None else f"{t.from_state} -> {t.to_state}"
     line = f"+{format_elapsed(t.elapsed_s)}  {format_cost(t.cost_usd)}  {move}"
-    return f"{line}  ({t.note})" if t.note else line
+    return f"{line}  ({safe(t.note)})" if t.note else line
 
 
 def render_trace(
@@ -30,8 +43,8 @@ def render_trace(
 ) -> str:
     outcome = run.outcome or "running"
     lines = [
-        f"run {run.run_id}  workflow {run.workflow}  model {run.model_class or '-'}  outcome {outcome}",
-        f"started {run.started_at.isoformat(timespec='seconds')}  worktree {run.worktree_path or '-'}",
+        f"run {run.run_id}  workflow {safe(run.workflow)}  model {safe(run.model_class)}  outcome {outcome}",
+        f"started {run.started_at.isoformat(timespec='seconds')}  worktree {safe(run.worktree_path)}",
         "",
     ]
     lines += [f"  {status_line(t)}" for t in transitions]
@@ -41,8 +54,8 @@ def render_trace(
         lines += ["", "tool calls:"]
         for c in calls:
             lines.append(
-                f"  {c.seq:>3}  {c.state:<15} {c.tool_name:<12} {c.result_status:<7} "
-                f"{c.duration_ms:>7}ms  {format_cost(c.cost_usd)}  {c.args_summary}"
+                f"  {c.seq:>3}  {c.state:<15} {safe(c.tool_name):<12} {c.result_status:<7} "
+                f"{c.duration_ms:>7}ms  {format_cost(c.cost_usd)}  {safe(c.args_summary)}"
             )
     by_status: dict[str, int] = {}
     for c in calls:
@@ -64,7 +77,7 @@ def render_run_list(runs: list[RunRecord]) -> str:
     rows = [
         (
             r.run_id,
-            r.workflow,
+            safe(r.workflow),
             r.state,
             r.outcome or "running",
             format_elapsed(r.elapsed_s),
