@@ -35,6 +35,8 @@ class FakeHost:
     files: set[str] = field(default_factory=set)
     reachable: bool = True
     run_calls: list[tuple[str, ...]] = field(default_factory=list)
+    run_argv: list[list[str]] = field(default_factory=list)
+    run_envs: list[dict[str, str] | None] = field(default_factory=list)
     exists_calls: list[str] = field(default_factory=list)
     head_calls: list[tuple[str, float]] = field(default_factory=list)
 
@@ -46,9 +48,12 @@ class FakeHost:
         monkeypatch.setattr(doctor, "_exists", self._exists)
         monkeypatch.setattr(doctor, "_env", lambda: dict(self.env))
 
-    def _run(self, argv: list[str]) -> tuple[int, str]:
-        key = tuple(argv)
+    def _run(self, argv: list[str], env: dict[str, str] | None = None) -> tuple[int, str]:
+        # Fixtures are keyed by tool name; doctor runs the resolved absolute path.
+        key = (Path(argv[0]).name, *argv[1:])
         self.run_calls.append(key)
+        self.run_argv.append(list(argv))
+        self.run_envs.append(None if env is None else dict(env))
         return self.commands.get(key, (127, ""))
 
     def _head(self, url: str, timeout: float) -> bool:
@@ -172,6 +177,26 @@ def test_probes_stay_off_user_claude_dir(monkeypatch: pytest.MonkeyPatch) -> Non
     assert host.exists_calls == ["/Library/Application Support/ClaudeCode/managed-settings.json"]
     assert all(".claude" not in part for call in host.run_calls for part in call)
     assert host.head_calls == [(doctor.EGRESS_URL, doctor.EGRESS_TIMEOUT_S)]
+
+
+def test_probes_run_resolved_absolute_paths_without_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    host = leaky_host()
+    host.env["PATH"] = "/usr/bin"
+    host.install(monkeypatch)
+    doctor.probe_host()
+    doctor.probe_runtimes()
+    assert host.run_argv, "no probe ran"
+    for argv in host.run_argv:
+        assert argv[0] == host.tools[Path(argv[0]).name]
+    version_envs = [env for argv, env in zip(host.run_argv, host.run_envs) if argv[1:] == ["--version"]]
+    assert version_envs and all(env == {"PATH": "/usr/bin"} for env in version_envs)
+
+
+def test_relative_path_hit_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: f"./{name}")
+    assert doctor._which("claude") is None
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: f"/opt/bin/{name}")
+    assert doctor._which("claude") == "/opt/bin/claude"
 
 
 @pytest.mark.parametrize(

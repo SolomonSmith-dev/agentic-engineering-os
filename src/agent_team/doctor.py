@@ -40,12 +40,23 @@ MANAGED_SETTINGS_PATHS: dict[str, str] = {
 
 _VERSION = re.compile(r"\d+\.\d+(?:\.\d+)?")
 
+# Env vars a `--version` probe never needs; dropped so a tool cannot see them.
+_CREDENTIAL_ENV = re.compile(r"TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL", re.IGNORECASE)
+
 
 def _which(name: str) -> str | None:
-    return shutil.which(name)
+    """Absolute path of `name` on PATH, or None.
+
+    A relative hit (a `.` or empty PATH entry, or Windows' current-directory
+    lookup) is refused so a binary planted in the repo under inspection never runs.
+    """
+    path = shutil.which(name)
+    if path is None or not os.path.isabs(path):
+        return None
+    return path
 
 
-def _run(argv: list[str]) -> tuple[int, str]:
+def _run(argv: list[str], env: Mapping[str, str] | None = None) -> tuple[int, str]:
     """Run a probe command; stdout only, stderr discarded, never raises."""
     try:
         proc = subprocess.run(
@@ -55,6 +66,7 @@ def _run(argv: list[str]) -> tuple[int, str]:
             timeout=PROBE_TIMEOUT_S,
             check=False,
             stdin=subprocess.DEVNULL,
+            env=dict(env) if env is not None else None,
         )
     except (OSError, subprocess.SubprocessError):
         return 127, ""
@@ -98,10 +110,15 @@ def extract_version(text: str) -> str | None:
     return match.group(0) if match else None
 
 
+def _scrubbed_env() -> dict[str, str]:
+    return {k: v for k, v in _env().items() if not _CREDENTIAL_ENV.search(k)}
+
+
 def probe_version(name: str) -> str | None:
-    if _which(name) is None:
+    path = _which(name)
+    if path is None:
         return None
-    code, out = _run([name, "--version"])
+    code, out = _run([path, "--version"], env=_scrubbed_env())
     return extract_version(out) if code == 0 else None
 
 
@@ -128,9 +145,10 @@ def _claude_auth() -> bool:
     env = _env()
     if env.get("ANTHROPIC_API_KEY") or env.get("CLAUDE_CODE_OAUTH_TOKEN"):
         return True
-    if _which("claude") is None:
+    path = _which("claude")
+    if path is None:
         return False
-    code, out = _run(["claude", "auth", "status", "--json"])
+    code, out = _run([path, "auth", "status", "--json"])
     if code != 0:
         return False
     try:
@@ -145,9 +163,10 @@ def _gh_auth() -> bool:
     env = _env()
     if env.get("GH_TOKEN") or env.get("GITHUB_TOKEN"):
         return True
-    if _which("gh") is None:
+    path = _which("gh")
+    if path is None:
         return False
-    code, _ = _run(["gh", "auth", "status", "--hostname", "github.com"])
+    code, _ = _run([path, "auth", "status", "--hostname", "github.com"])
     return code == 0
 
 
