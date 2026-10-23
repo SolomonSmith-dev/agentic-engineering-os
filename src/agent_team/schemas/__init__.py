@@ -11,6 +11,14 @@ from pydantic import BaseModel
 from agent_team.schemas.agent import AgentSpec, Capabilities
 from agent_team.schemas.doctor import DoctorReport
 from agent_team.schemas.policy import PolicySpec, RedactionRule
+from agent_team.schemas.runs import (
+    RunOutcome,
+    RunRecord,
+    RunState,
+    StateTransition,
+    ToolCallRecord,
+    ToolResultStatus,
+)
 from agent_team.schemas.skill import SkillSpec
 from agent_team.schemas.tool import Implementation, ToolSpec
 from agent_team.schemas.workflow import Transition, WorkflowSpec
@@ -43,7 +51,13 @@ __all__ = [
     "Implementation",
     "PolicySpec",
     "RedactionRule",
+    "RunOutcome",
+    "RunRecord",
+    "RunState",
     "SkillSpec",
+    "StateTransition",
+    "ToolCallRecord",
+    "ToolResultStatus",
     "ToolSpec",
     "Transition",
     "WorkflowSpec",
