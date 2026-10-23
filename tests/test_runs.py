@@ -431,8 +431,7 @@ def test_trace_refuses_unignored_repo(tmp_path: Path) -> None:
 def test_redaction_inside_serialized_strings(text: str) -> None:
     summary = summarize_args({"payload": text})
     assert REDACTED in summary
-    for fragment in ("two words-canary", "escaped-canary", "quoted spaced canary", "flag-canary"):
-        assert fragment not in summary
+    assert "canary" not in summary
 
 
 def test_refuses_when_state_dir_is_tracked(repo: Path, clock: FakeClock) -> None:
