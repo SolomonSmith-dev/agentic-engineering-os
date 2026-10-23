@@ -1,0 +1,11 @@
+kind: policy
+name: default
+autonomy_ceiling:
+  independent-reviewer: A2
+protected_paths: [".env", ".env.*", "~/.claude/**", ".agent-team/**"]
+denied_capabilities: [git.push.main, fs.write.home]
+redaction:
+  - name: api-keys
+    pattern: "(sk|ghp|gho|github_pat)_[A-Za-z0-9_]{16,}"
+required_gates: [tests_pass, reviewer_verdict]
+default_autonomy: A0

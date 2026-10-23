@@ -1,0 +1,7 @@
+kind: tool
+capability: github.pr.create
+description: Open a draft pull request with the GitHub CLI.
+implementation:
+  type: cli
+  command: gh pr create --draft
+credential: GH_TOKEN

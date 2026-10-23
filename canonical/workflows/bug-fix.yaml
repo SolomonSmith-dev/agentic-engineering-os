@@ -1,0 +1,16 @@
+kind: workflow
+name: bug-fix
+purpose: Reproduce, fix and review one bug; open a draft PR gated on the reviewer's verdict.
+states: [PLAN, PLAN_REVIEW, IMPLEMENT, CODE_REVIEW, PR_DRAFT, DONE, ESCALATED]
+transitions:
+  - { from: PLAN, to: PLAN_REVIEW }
+  - { from: PLAN_REVIEW, to: IMPLEMENT, gate: reviewer_verdict == approve }
+  - { from: IMPLEMENT, to: CODE_REVIEW, gate: tests_pass }
+  - { from: CODE_REVIEW, to: PR_DRAFT, gate: reviewer_verdict == approve }
+  - { from: CODE_REVIEW, to: IMPLEMENT, gate: reviewer_verdict == changes and retries < 1 }
+  - { from: CODE_REVIEW, to: ESCALATED, gate: reviewer_verdict == escalate or retries >= 1 }
+  - { from: PR_DRAFT, to: DONE }
+definition_of_done:
+  - a draft PR exists on a branch the run owns
+  - the reviewer verdict and findings are in the PR body
+  - every state transition is in the run record with cost
