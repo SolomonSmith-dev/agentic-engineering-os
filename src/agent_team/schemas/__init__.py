@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from agent_team.schemas.agent import AgentSpec, Capabilities
+from agent_team.schemas.bootstrap import DetectedCommand, Proposal, RepoConfig
 from agent_team.schemas.doctor import DoctorReport
 from agent_team.schemas.environment import EnvironmentSpec, NetworkPolicy, PortPolicy
 from agent_team.schemas.policy import PolicySpec, RedactionRule
@@ -51,6 +52,7 @@ __all__ = [
     "SCHEMAS",
     "AgentSpec",
     "Capabilities",
+    "DetectedCommand",
     "DoctorReport",
     "EnvironmentSpec",
     "Implementation",
@@ -58,8 +60,10 @@ __all__ = [
     "NetworkPolicy",
     "PolicySpec",
     "PortPolicy",
+    "Proposal",
     "RedactionRule",
     "RegistrySpec",
+    "RepoConfig",
     "RunOutcome",
     "RunRecord",
     "RunState",

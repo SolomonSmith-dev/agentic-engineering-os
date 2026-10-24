@@ -7,6 +7,7 @@ import typer
 
 from agent_team import __version__
 from agent_team.adapters.claude.invoke import ClaudeVersionError
+from agent_team.bootstrap import BootstrapError, apply_plan, plan_configure, render_summary, write_proposal
 from agent_team.canonical import validate_tree
 from agent_team.doctor import _which, build_report, render_table
 from agent_team.environments import AllocatorError, LockHeldError, sweep
@@ -74,6 +75,61 @@ def doctor(
         typer.echo(report.model_dump_json(indent=2))
         return
     typer.echo(render_table(report))
+
+
+@app.command("init")
+def init_repo(
+    repo: Path = typer.Argument(Path("."), help="Target repository; defaults to the current directory."),
+    force: bool = typer.Option(False, "--force", help="Replace an existing .agent-team/proposal.yaml."),
+) -> None:
+    """Discover a repository read-only and write .agent-team/proposal.yaml. Runs nothing from the repo."""
+    try:
+        proposal, path = write_proposal(repo, force=force)
+    except (BootstrapError, RunStoreError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(render_summary(proposal))
+    typer.echo("✓ means the command's tool and target were found; nothing was run to check it.")
+    typer.echo(f"wrote {path}")
+    typer.echo("review it, set ask.approved: true, then run 'agent-team configure'")
+
+
+@app.command()
+def configure(
+    repo: Path = typer.Argument(Path("."), help="Target repository; defaults to the current directory."),
+    canonical: Path = typer.Option(Path("canonical"), "--canonical", help="Directory holding the canonical files."),
+    registry: Path | None = typer.Option(
+        None, "--registry", help="Model registry; defaults to routing/registry.yaml next to --canonical."
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Write without asking for confirmation."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show the diff and write nothing."),
+) -> None:
+    """Turn the approved proposal into .agent-team/config.yaml and runtime files, showing the diff first."""
+    try:
+        plan = plan_configure(repo, canonical, registry_path=registry, require_approved=not dry_run)
+    except (BootstrapError, RunStoreError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    for note in plan.notes:
+        typer.echo(f"note: {note}")
+    if not plan.writes:
+        typer.echo("nothing to change")
+        return
+    typer.echo(plan.diff(), nl=False)
+    typer.echo("files to write: " + ", ".join(w.path for w in plan.writes))
+    if dry_run:
+        typer.echo("dry run: nothing written")
+        return
+    if not yes and not typer.confirm("Write these files?", default=False):
+        typer.echo("nothing written")
+        raise typer.Exit(code=1)
+    try:
+        written = apply_plan(plan)
+    except (BootstrapError, OSError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    for path in written:
+        typer.echo(f"wrote {path}")
 
 
 @app.command()
