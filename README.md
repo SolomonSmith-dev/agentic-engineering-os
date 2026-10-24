@@ -22,6 +22,22 @@ agent-team doctor
 agent-team doctor --json
 ```
 
+## Init and configure a target repository
+
+`agent-team init <repo>` discovers a repository read-only and writes `.agent-team/proposal.yaml`, then prints a summary. It records the VCS host and remote (credentials stripped), the default branch, protected branches when the repository itself declares them (`.github/settings.yml`; otherwise `unknown`, because the hosting API needs auth and init makes no network calls), the CI system and its files, build, test, lint and type-check commands (from `Makefile`, `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`), instruction files (`CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`, `GEMINI.md`, `.cursorrules` and friends), MCP configs (server names only), secret handling (`.env` files, key files, vault and secret-store references) by path and kind only, devcontainer and CODEOWNERS. It refuses unless git ignores `.agent-team/`, writes nothing else, and keeps an existing proposal unless you pass `--force`.
+
+Each command gets a ✓ or ✗ from a dry-run check that runs nothing: ✓ means the tool the command needs was found (on PATH as an absolute path, or in the repository's `.venv/` or `node_modules/`) and the Makefile target or package script it names exists. It does not mean the command passes. `make -n`, `--help` and `--collect-only` are not used, because each can run code from the repository.
+
+```bash
+agent-team init /path/to/repo
+# review .agent-team/proposal.yaml; edit the ask (runtimes, privacy classes, autonomy ceiling up to A3, draft PRs)
+# and set ask.approved: true
+agent-team configure /path/to/repo --canonical ~/Projects/agentic-engineering-os/canonical --dry-run
+agent-team configure /path/to/repo --canonical ~/Projects/agentic-engineering-os/canonical
+```
+
+`agent-team configure <repo>` turns the approved proposal into `.agent-team/config.yaml` (verified commands by kind, which later steps use as the test, lint and type-check gates) and compiles runtime files: a marked block (`<!-- agent-team:begin -->` to `<!-- agent-team:end -->`) appended to `CLAUDE.md` and to `AGENTS.md` if it exists, and each canonical agent as `.claude/agents/<name>.md`. It prints a unified diff of every file it will write and asks before writing; `--yes` skips the question and `--dry-run` only shows the diff (it works before approval). Text outside the block is never changed; a re-run updates the block in place and writes nothing when nothing changed. A `CLAUDE.md` that imports `@AGENTS.md` is left alone. An agent file it did not write, a file with the same agent name under `.github/agents/`, and any path that is or sits under a symlink are left untouched and reported. It never writes `.claude/settings.json`. This is the only command that writes a target repository's `.claude/`.
+
 ## Run record and trace
 
 Every run is recorded in `.agent-team/runs.db` inside the target repository: one row per run (state, start and end time, cost so far, model class, worktree, outcome), one per state transition, and one per tool call (tool, redacted argument summary, result, duration, cost). The store refuses to open unless git already ignores `.agent-team/`, and it writes nothing outside that directory. Tool-call arguments are redacted and truncated before they are stored.
@@ -58,6 +74,33 @@ After changing the adapter, the sandbox or the run path, run the opt-in live che
 ```bash
 AGENT_TEAM_LIVE=1 uv run pytest -q -m live
 ```
+
+## Run a workflow
+
+`agent-team run --workflow bug-fix` runs a canonical workflow through the orchestrator instead of a single agent. The orchestrator builds a DAG from `canonical/workflows/bug-fix.yaml` (a linear chain for now) and walks it: each node names its state, who works in it (a canonical agent or an in-process step), the evidence it must leave, and the gate that must pass to move on.
+
+```text
+INTAKE -> DISCOVERY -> PLAN -> IMPLEMENTATION -> TEST -> CODE_REVIEW -> PR -> HUMAN_DECISION
+
+gates:  DISCOVERY -> PLAN        reproduction_fails  (reproduction recorded before the fix)
+        TEST -> CODE_REVIEW      tests_pass          (orchestrator-run, after the fix)
+        CODE_REVIEW -> PR        reviewer_verdict == approve
+```
+
+- A gate is `<evidence>` (passes only when that evidence is `true`) or `<evidence> == <value>`. A node that leaves out required evidence, reports a blocker, or fails every gate moves the run to BLOCKED, and the run ends `blocked`.
+- The reviewer's `changes` verdict sends the run back to IMPLEMENTATION once (the implementer gets the plan and the findings, in a fresh process). A second `changes`, or an `escalate` verdict, takes the escalate edge to PR: the draft PR is marked blocked and the run ends `blocked` at HUMAN_DECISION.
+- Each node sees only the evidence its `inputs` list names; the reviewer gets the plan, the diff and the orchestrator's test output, never an implementer transcript.
+- Agent nodes run through the same path as `run --agent`, each as its own child run (`agent:<name>` in `trace`); their cost is added to the workflow run. `--max-budget-usd` and `--timeout` apply to each agent call. `--model` is for `--agent` runs only.
+- One terminal line per transition, as for `--agent`.
+
+Every transition writes a checkpoint (the task, the evidence so far, retry counts) in the same transaction, redacted like everything else in the run record. Interrupt a run with Ctrl-C and it stays open; resume re-enters the state that was running, and nothing is disposed:
+
+```bash
+agent-team run --workflow bug-fix --repo /path/to/target "Fix the crash on empty input."
+agent-team resume <run-id> --repo /path/to/target
+```
+
+Until build-order step 11 lands the implementer agent and the `test` and `pr` steps, `run --workflow bug-fix` refuses before recording anything and names what is missing.
 
 ## Run the reviewer on Codex
 

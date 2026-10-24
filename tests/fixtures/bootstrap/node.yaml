@@ -1,0 +1,60 @@
+# agent-team proposal: what `agent-team init` found, and the ask under `ask:`.
+# Edit anything, set ask.approved: true, then run `agent-team configure`.
+# verified: true (✓) means the command's tool and target were found; nothing was run.
+version: 1
+vcs:
+  host: gitlab
+  remote: gitlab.com/acme/web
+  default_branch: main
+  default_branch_source: local branch
+  protected_branches:
+  - main
+  protected_branches_source: .github/settings.yml
+ci:
+  systems:
+  - gitlab-ci
+  files:
+  - .gitlab-ci.yml
+commands:
+- kind: build
+  command: pnpm run build
+  source: package.json script build
+  verified: true
+  check: pnpm on PATH; script 'build' defined
+- kind: test
+  command: make test
+  source: Makefile target test
+  verified: true
+  check: make on PATH; target 'test' defined
+- kind: test
+  command: pnpm run test
+  source: package.json script test
+  verified: true
+  check: pnpm on PATH; script 'test' defined
+- kind: lint
+  command: pnpm run lint
+  source: package.json script lint
+  verified: true
+  check: pnpm on PATH; script 'lint' defined
+- kind: typecheck
+  command: pnpm run typecheck
+  source: package.json script typecheck
+  verified: true
+  check: pnpm on PATH; script 'typecheck' defined
+instruction_files:
+- AGENTS.md
+mcp_configs: []
+secrets:
+- path: .gitlab-ci.yml
+  kind: vault
+  tracked: true
+devcontainer: []
+codeowners: null
+ask:
+  runtimes:
+  - claude
+  privacy_classes:
+  - vendor-cloud
+  autonomy_ceiling: A3
+  draft_prs: true
+  approved: false
