@@ -35,6 +35,11 @@ DEFAULT_PROTECTED: tuple[str, ...] = (
     ".env*", "*.pem", "~/.ssh/**", "~/.aws/**", "~/.config/gcloud/**", "~/.claude/**",
     # GitHub credentials: the orchestrator holds github.*, and a worker must never read the token.
     "~/.config/gh/**", "~/.git-credentials", "~/.netrc",
+    # Signing and SSH keys anywhere in the repo: the key-file kinds `init` reports as secrets.
+    "*.key", "*.p12", "*.pfx", "id_rsa*", "id_ecdsa*", "id_ed25519*",
+    # Registry, cluster and cloud logins a build tool would pick up from home.
+    "~/.docker/**", "~/.kube/**", "~/.npmrc", "~/.pypirc", "~/.gnupg/**", "~/.azure/**", "~/.config/op/**",
+    "~/.cargo/credentials", "~/.cargo/credentials.toml", "~/.m2/settings.xml", "~/.gradle/gradle.properties",
 )  # fmt: skip
 
 PERMISSION_MODE = "dontAsk"
