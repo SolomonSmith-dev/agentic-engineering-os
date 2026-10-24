@@ -176,7 +176,7 @@ def hook_policy(tmp_path: Path) -> dict:
     repo = tmp_path / "repo"
     worktree = repo / ".agent-team" / "worktrees" / "run-1"
     return {
-        "protected_paths": [".env*", "*.pem", "~/.ssh/**", ".agent-team/**"],
+        "protected_paths": [".env*", "*.pem", "~/.ssh/**", "~/.claude/**", ".agent-team/**"],
         "roots": [str(worktree), str(repo)],
         "home": str(tmp_path / "home"),
     }
@@ -197,6 +197,14 @@ def hook_policy(tmp_path: Path) -> dict:
         ("Bash", {"command": 'cat "$HOME/.ssh/id_ed25519"'}, True),
         ("Bash", {"command": "cat ${HOME}/.ssh/config"}, True),
         ("Bash", {"command": "echo $HOMEBREW_PREFIX"}, False),
+        ("Bash", {"command": "cat .en''v"}, True),
+        ("Bash", {"command": 'head ~/.ss""h/id_ed25519'}, True),
+        ("Bash", {"command": "cat .e\\nv"}, True),
+        ("Bash", {"command": "cat .en?"}, True),
+        ("Bash", {"command": "tail -n1 .e*"}, True),
+        ("Bash", {"command": "ls; cat '.env'"}, True),
+        ("Bash", {"command": "cat 'unterminated"}, True),
+        ("Bash", {"command": "git log --format='%H %s' -3"}, False),
         ("Bash", {"command": "sqlite3 ../../runs.db .dump"}, True),
         ("Bash", {"command": "git diff HEAD~1"}, False),
         ("Grep", {"pattern": "TOKEN", "path": ".env"}, True),

@@ -31,7 +31,9 @@ from agent_team.schemas.policy import PolicySpec
 from agent_team.schemas.skill import SkillSpec
 
 # Protected in every compiled session on top of the policy's own list (architecture section 8).
-DEFAULT_PROTECTED: tuple[str, ...] = (".env*", "*.pem", "~/.ssh/**", "~/.aws/**", "~/.config/gcloud/**")
+DEFAULT_PROTECTED: tuple[str, ...] = (
+    ".env*", "*.pem", "~/.ssh/**", "~/.aws/**", "~/.config/gcloud/**", "~/.claude/**",
+)  # fmt: skip
 
 PERMISSION_MODE = "dontAsk"
 
@@ -119,7 +121,7 @@ def compile_agent(
         encoding="utf-8",
     )
 
-    path_denies = [path_rule(tool, p) for p in protected for tool in ("Read", "Edit")]
+    path_denies = [path_rule(tool, p) for p in protected for tool in ("Read", "Edit", "Write")]
     settings = {
         "permissions": {
             "defaultMode": PERMISSION_MODE,

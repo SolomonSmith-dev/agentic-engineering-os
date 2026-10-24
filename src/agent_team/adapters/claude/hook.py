@@ -3,7 +3,12 @@
 Claude Code runs this before every tool call with the call as JSON on stdin.
 Exit 2 blocks the call and shows stderr to the agent; exit 0 lets it through.
 Permission deny rules already cover the file tools; this also catches a Bash
-command such as `cat .env`, which a `Read(...)` deny rule never sees.
+command such as `cat .env` or `head .en''v`, which a `Read(...)` deny rule
+never sees. Bash words are read the way the shell would (quotes and escapes
+joined, globs matched against protected names); a command the hook cannot
+parse is blocked. It is a tripwire, not a boundary: a process that assembles
+a path at run time (`f=.e; cat ${f}nv`) gets past it, and only srt's own
+denyRead rules hold against that.
 
     python -m agent_team.adapters.claude.hook <compiled>/policy.json
 """
@@ -12,6 +17,7 @@ import fnmatch
 import json
 import os
 import re
+import shlex
 import sys
 from pathlib import Path
 from typing import Any
@@ -31,8 +37,31 @@ def _candidates(tool: str, tool_input: dict[str, Any]) -> list[str]:
     if tool in SEARCH_TOOLS:
         return [str(tool_input.get(k)) for k in ("path", "pattern", "glob") if tool_input.get(k)]
     if tool == "Bash":
-        return _WORDS.findall(_HOME_VAR.sub("~", str(tool_input.get("command", ""))))
+        return _shell_words(str(tool_input.get("command", "")))
     return []
+
+
+class UnparsableCommand(ValueError):
+    """The hook cannot split the command the way the shell would; the call is blocked."""
+
+
+def _shell_words(command: str) -> list[str]:
+    """Every word the shell could see, quotes and escapes removed, plus the raw path-like pieces."""
+    command = _HOME_VAR.sub("~", command)
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";|&<>()")
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError as exc:
+        raise UnparsableCommand(str(exc)) from exc
+    words = dict.fromkeys(_WORDS.findall(command))
+    for token in tokens:
+        words[token] = None
+        words.update(dict.fromkeys(_WORDS.findall(token)))
+    return list(words)
+
+
+_GLOB_CHARS = re.compile(r"[*?\[]")
 
 
 def _expand(candidate: str, home: Path) -> Path:
@@ -69,6 +98,8 @@ def protected_match(candidate: str, patterns: list[str], roots: list[Path], home
                 return pattern
         elif fnmatch.fnmatch(absolute.name, glob):
             return pattern
+        elif _GLOB_CHARS.search(absolute.name) and fnmatch.fnmatch(glob.replace("*", "").replace("?", "x"), absolute.name):
+            return pattern  # the shell would expand `.en?` or `.e*` to a protected name
     return None
 
 
@@ -80,7 +111,11 @@ def check(event: dict[str, Any], policy: dict[str, Any]) -> str | None:
         return f"{tool}: tool input is not an object"
     roots = [Path(r) for r in policy["roots"]]
     home = Path(policy["home"])
-    for candidate in _candidates(tool, tool_input):
+    try:
+        candidates = _candidates(tool, tool_input)
+    except UnparsableCommand as exc:
+        return f"blocked by agent-team policy: {tool} command could not be parsed ({exc}); quote it plainly"
+    for candidate in candidates:
         pattern = protected_match(candidate, list(policy["protected_paths"]), roots, home)
         if pattern is not None:
             return f"blocked by agent-team policy: {tool} touches {candidate!r}, protected by {pattern!r}"
