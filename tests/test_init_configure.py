@@ -334,10 +334,16 @@ def test_configure_extends_claude_md_and_writes_only_the_diffed_files(python_rep
     config = RepoConfig.model_validate(yaml.safe_load((python_repo / ".agent-team" / "config.yaml").read_text(encoding="utf-8")))
     assert config.commands == {"build": ["uv build"], "test": ["uv run pytest"]}
     assert config.unverified_commands == {"lint": ["uv run ruff check ."], "typecheck": ["uv run mypy ."]}
-    assert config.instruction_files == ["CLAUDE.md"] and config.agents == [".claude/agents/independent-reviewer.md"]
+    assert config.instruction_files == ["CLAUDE.md"]
+    assert config.agents == [".claude/agents/independent-reviewer.md", ".claude/agents/repository-archaeologist.md"]
+
+    archaeologist = (python_repo / ".claude" / "agents" / "repository-archaeologist.md").read_text(encoding="utf-8")
+    assert "Bash(uv run pytest)" not in archaeologist, "A0: no test.run, whatever the proposal's ceiling"
 
     status = git(python_repo, "status", "--porcelain", "--untracked-files=all").splitlines()
-    assert sorted(status) == [" M CLAUDE.md", "?? .claude/agents/independent-reviewer.md"]
+    assert sorted(status) == [
+        " M CLAUDE.md", "?? .claude/agents/independent-reviewer.md", "?? .claude/agents/repository-archaeologist.md",
+    ]
 
 
 def test_configure_is_idempotent_and_updates_the_block_in_place(python_repo: Path) -> None:
