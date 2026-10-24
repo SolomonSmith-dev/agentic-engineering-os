@@ -21,8 +21,9 @@ from agent_team.schemas.environment import EnvironmentSpec
 # Ceiling for any run that is not wrapped in srt (worktree-only isolation).
 UNSANDBOXED_CEILING: Autonomy = "A2"
 
-# Read-denied for every sandboxed process: credentials that never belong in a run.
-DENY_READ_HOME: tuple[str, ...] = (".ssh", ".aws")
+# Read-denied for every sandboxed process: credentials that never belong in a run. The GitHub
+# ones are the orchestrator's (it pushes and runs gh outside the sandbox), never a worker's.
+DENY_READ_HOME: tuple[str, ...] = (".ssh", ".aws", ".config/gh", ".git-credentials", ".netrc")
 
 
 def srt_path() -> str | None:

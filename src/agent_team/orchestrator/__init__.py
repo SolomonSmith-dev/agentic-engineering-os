@@ -1,4 +1,4 @@
-"""agent_team.orchestrator: workflow DAG builder and the state machine that walks it (build-order step 10)."""
+"""agent_team.orchestrator: workflow DAG builder and the state machine that walks it (build-order steps 10 and 11)."""
 
 from agent_team.orchestrator.dag import Dag, DagError, DagNode, Edge, Gate, OrchestratorError, build_dag
 from agent_team.orchestrator.executors import STEPS, DefaultExecutor

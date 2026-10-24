@@ -3,37 +3,41 @@ name: bug-fix
 purpose: Reproduce, fix and review one bug; open a draft PR gated on the reviewer's verdict.
 # Section 5 of docs/ARCHITECTURE.md, as a linear chain. BLOCKED, RESUME and the
 # run's end are handled by the orchestrator, so they are not listed here.
+# Large evidence (the diff, the test output, the verdict) is a file under
+# .agent-team/artifacts/<run-id>/; the evidence holds its path and the commit it describes.
 states: [INTAKE, DISCOVERY, PLAN, IMPLEMENTATION, TEST, CODE_REVIEW, PR, HUMAN_DECISION]
 nodes:
   INTAKE: { step: intake, evidence: [task] }
-  # The MVP has no debugger agent; the implementer reproduces, in its own process.
+  # The MVP has no debugger agent; the implementer reproduces, in its own process,
+  # and the orchestrator re-runs the reproduction in the sandbox (reproduction_check).
   DISCOVERY:
     agent: implementer
-    evidence: [reproduction_command, reproduction_fails]
+    evidence: [reproduction_command, reproduction_fails, reproduction_check]
   # One synthetic acceptance criterion when the task gives none: the reproduction passes.
   PLAN:
     step: plan
     evidence: [plan]
     inputs: [reproduction_command]
+  # The diff is cut by the orchestrator from the branch; claimed_changes is the implementer's word.
   IMPLEMENTATION:
     agent: implementer
-    evidence: [diff]
+    evidence: [diff, claimed_changes]
     inputs: [plan, reproduction_command, findings]
-  # Orchestrator-run, so the reviewer never relies on the implementer's word.
+  # Orchestrator-run, in the sandbox, on exactly the commit the diff ends at.
   TEST:
     step: test
     evidence: [test_output, tests_pass]
-    inputs: [reproduction_command]
+    inputs: [reproduction_command, diff]
   # Fresh process: the plan, the diff and the orchestrator's test output, never a transcript.
   CODE_REVIEW:
     agent: independent-reviewer
-    evidence: [reviewer_verdict, findings]
+    evidence: [reviewer_verdict, findings, review]
     inputs: [plan, diff, test_output]
   PR:
     step: pr
     evidence: [pr]
-    inputs: [plan, diff, test_output, reviewer_verdict, findings]
-  HUMAN_DECISION: { step: human_decision }
+    inputs: [plan, reproduction_command, reproduction_check, diff, claimed_changes, test_output, tests_pass, reviewer_verdict, findings, review]
+  HUMAN_DECISION: { step: human_decision, inputs: [pr] }
 transitions:
   - { from: INTAKE, to: DISCOVERY }
   - { from: DISCOVERY, to: PLAN, gate: reproduction_fails } # reproduction recorded before the fix

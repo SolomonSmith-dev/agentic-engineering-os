@@ -10,6 +10,10 @@ parse is blocked. It is a tripwire, not a boundary: a process that assembles
 a path at run time (`f=.e; cat ${f}nv`) gets past it, and only srt's own
 denyRead rules hold against that.
 
+It also confines the file-writing tools to the policy's `write_root` (the
+run's worktree): a target that resolves outside it, symlinks followed, is
+blocked, on top of the `Edit(./**)` allow rule.
+
     python -m agent_team.adapters.claude.hook <compiled>/policy.json
 """
 
@@ -24,6 +28,7 @@ from typing import Any
 
 BLOCK = 2
 FILE_TOOLS = ("Read", "Edit", "Write", "MultiEdit", "NotebookEdit")
+WRITE_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 SEARCH_TOOLS = ("Glob", "Grep")
 # Path-like words in a shell command: everything between shell punctuation and whitespace.
 _WORDS = re.compile(r"[^\s\"'`;|&<>()=$,]+")
@@ -119,7 +124,31 @@ def check(event: dict[str, Any], policy: dict[str, Any]) -> str | None:
         pattern = protected_match(candidate, list(policy["protected_paths"]), roots, home)
         if pattern is not None:
             return f"blocked by agent-team policy: {tool} touches {candidate!r}, protected by {pattern!r}"
+    write_root = policy.get("write_root")
+    if tool in WRITE_TOOLS and write_root is not None:
+        for candidate in candidates:
+            if not inside(candidate, Path(write_root), home):
+                return f"blocked by agent-team policy: {tool} writes {candidate!r}, outside the run's worktree"
+            if ".git" in Path(candidate).parts or ".git" in resolved_parts(candidate, Path(write_root), home):
+                # The worktree's .git file names its gitdir; repointed, the orchestrator's own git
+                # (outside every sandbox) would read a config the agent wrote.
+                return f"blocked by agent-team policy: {tool} writes {candidate!r}, inside git's metadata"
     return None
+
+
+def resolved_parts(candidate: str, root: Path, home: Path) -> tuple[str, ...]:
+    """The parts of `candidate` below `root` once symlinks are followed, so a link to `.git` is caught too."""
+    path = _expand(candidate, home)
+    target = Path(os.path.realpath(path if path.is_absolute() else root / path))
+    real_root = Path(os.path.realpath(root))
+    return target.relative_to(real_root).parts if target.is_relative_to(real_root) else ()
+
+
+def inside(candidate: str, root: Path, home: Path) -> bool:
+    """Whether `candidate` (relative paths against `root`) resolves inside `root`, symlinks followed."""
+    path = _expand(candidate, home)
+    target = Path(os.path.realpath(path if path.is_absolute() else root / path))
+    return target.is_relative_to(Path(os.path.realpath(root)))
 
 
 def main(argv: list[str] | None = None) -> int:

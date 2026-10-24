@@ -15,13 +15,16 @@ recorded, before the run is finished: still inside the run's lock, worktree
 and sandbox, so `inspect` can verify commands there and record them on the
 same run. If it raises, the run ends `failed`.
 
-The orchestrator (step 10) replaces this with workflow-driven runs; until then
-this is the one path that runs an agent, and it records everything it does.
+The orchestrator (step 10) runs every agent node through here as a child run.
+Step 11 lets it hand over the worktree: `environment` runs the agent in the
+workflow's own worktree (the implementer, so every attempt commits on one
+branch), and `base_commit` cuts the child's fresh worktree at a given commit
+(the reviewer, so it reads exactly the commit it reviews).
 """
 
 import os
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import get_args
 
@@ -31,7 +34,7 @@ from agent_team.adapters.claude.invoke import RUNTIME, build_invocation, check_v
 from agent_team.adapters.codex.invoke import API_DOMAINS
 from agent_team.adapters.codex.invoke import auth_mode as codex_auth_mode
 from agent_team.canonical import Document, validate_tree
-from agent_team.environments import acquire, create, release, srt_path
+from agent_team.environments import acquire, create, effective_ceiling, release, srt_path
 from agent_team.environments.sandbox import extend_settings
 from agent_team.environments.worktree import Environment
 from agent_team.routing import RegistryError, default_registry_path, load_registry, resolve_model
@@ -116,13 +119,18 @@ def run_agent(
     test_commands: tuple[str, ...] = (),
     policy_name: str = "default",
     environment_name: str = "default",
+    environment: Environment | None = None,
+    base_commit: str | None = None,
+    state: RunState | None = None,
     after: AfterAgent | None = None,
     echo: Callable[[str], None] = print,
 ) -> tuple[RunRecord, AdapterResult]:
     """Run one agent against `repo` and return its run record and normalized result.
 
     The model comes from the agent's model class in the registry for `runtime`; `model`
-    overrides it with another registry entry on that runtime.
+    overrides it with another registry entry on that runtime. `environment` reuses an
+    allocated worktree instead of creating one (the caller owns it), `base_commit` is the
+    commit a new worktree starts from, and `state` overrides the agent's first state trigger.
     """
     canonical = load_canonical(canonical_dir)
     agent_doc = canonical.one("agent", agent_name)
@@ -175,7 +183,14 @@ def run_agent(
             raise
         try:
             ceiling = requested_autonomy(agent.max_autonomy, policy.autonomy_ceiling.get(agent.name, policy.default_autonomy))
-            environment = create(root, run_id, env_spec, requested_autonomy=ceiling, store=store)
+            if environment is None:
+                environment = create(root, run_id, env_spec, requested_autonomy=ceiling, store=store, base=base_commit)
+            else:
+                # A shared worktree: this agent's own ceiling, still capped at A2 outside srt.
+                ceiling = requested_autonomy(ceiling, environment.autonomy_ceiling)
+                environment = replace(environment, autonomy_ceiling=effective_ceiling(ceiling, environment.sandbox.sandboxed))
+                store.set_worktree_path(run_id, str(environment.path))
+            work_state = state or agent_state(agent.triggers) or "IMPLEMENTATION"
             if runtime == "codex":
                 result = _run_codex(
                     store, run_id, root, state_dir, environment, agent, agent_doc.body, skills, policy,
@@ -183,7 +198,7 @@ def run_agent(
                     notes=[environment.note(env_spec.name), resolved.note()]
                     + ([f"took over a stale lock from run {replaced.run_id} (pid {replaced.pid})"] if replaced else []),
                     codex=codex, prompt=prompt, max_budget_usd=max_budget_usd, timeout_s=timeout_s,
-                    test_commands=test_commands, redaction=redaction, echo=echo,
+                    test_commands=test_commands, redaction=redaction, state=work_state, echo=echo,
                 )  # fmt: skip
                 if after is not None and result.status == "succeeded":
                     after(AgentRun(store, run_id, root, environment, policy, result))
@@ -202,14 +217,14 @@ def run_agent(
                 roots=[environment.path, root],
                 home=Path.home(),
                 test_commands=test_commands,
+                sandboxed=environment.sandbox.sandboxed,
             )
             notes = [environment.note(env_spec.name), resolved.note()]
             if replaced is not None:
                 notes.append(f"took over a stale lock from run {replaced.run_id} (pid {replaced.pid})")
             if compiled.permissions.dropped:
                 notes.append("dropped: " + "; ".join(compiled.permissions.dropped))
-            state = agent_state(agent.triggers) or "IMPLEMENTATION"
-            echo(status_line(store.transition(run_id, state, note=" | ".join(notes))))
+            echo(status_line(store.transition(run_id, work_state, note=" | ".join(notes))))
 
             invocation = build_invocation(
                 compiled,
@@ -275,6 +290,7 @@ def _run_codex(
     timeout_s: float,
     test_commands: tuple[str, ...],
     redaction: tuple[str, ...],
+    state: RunState,
     echo: Callable[[str], None],
 ) -> AdapterResult:
     """Compile for Codex, narrow the sandbox, run `codex exec --json` and record what it did."""
@@ -302,7 +318,6 @@ def _run_codex(
     notes.append("unavailable: " + "; ".join(codex_adapter.UNAVAILABLE))
     if compiled.permissions.dropped:
         notes.append("dropped: " + "; ".join(compiled.permissions.dropped))
-    state = agent_state(agent.triggers) or "IMPLEMENTATION"
     echo(status_line(store.transition(run_id, state, note=" | ".join(notes))))
 
     invocation = codex_adapter.build_invocation(

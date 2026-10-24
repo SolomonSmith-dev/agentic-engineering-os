@@ -36,6 +36,8 @@
       "Bash(git reset --hard *)",
       "Bash(git config)",
       "Bash(git config *)",
+      "Bash(gh)",
+      "Bash(gh *)",
       "Edit",
       "Write",
       "NotebookEdit",
@@ -62,7 +64,16 @@
       "Write(~/.aws/**)",
       "Read(~/.config/gcloud/**)",
       "Edit(~/.config/gcloud/**)",
-      "Write(~/.config/gcloud/**)"
+      "Write(~/.config/gcloud/**)",
+      "Read(~/.config/gh/**)",
+      "Edit(~/.config/gh/**)",
+      "Write(~/.config/gh/**)",
+      "Read(~/.git-credentials)",
+      "Edit(~/.git-credentials)",
+      "Write(~/.git-credentials)",
+      "Read(~/.netrc)",
+      "Edit(~/.netrc)",
+      "Write(~/.netrc)"
     ]
   },
   "hooks": {

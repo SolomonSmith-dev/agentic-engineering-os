@@ -123,6 +123,9 @@ def default_executor_factory(
     timeout_s: float,
     registry_path: Path | None = None,
     test_commands: tuple[str, ...] = (),
+    lint_commands: tuple[str, ...] = (),
+    typecheck_commands: tuple[str, ...] = (),
+    gh: str | None = None,
     policy_name: str = "default",
     echo: Echo = print,
 ) -> ExecutorFactory:
@@ -136,6 +139,9 @@ def default_executor_factory(
             timeout_s=timeout_s,
             registry_path=registry_path,
             test_commands=test_commands,
+            lint_commands=lint_commands,
+            typecheck_commands=typecheck_commands,
+            gh=gh,
             policy_name=policy_name,
             echo=echo,
         )
