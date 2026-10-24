@@ -19,8 +19,19 @@ models:
     runtime: claude
     privacy_class: vendor-cloud
     capabilities: [tool_use, structured_output]
+  # Listed in openai/codex models-manager/models.json (Oct 2026) as the latest coding workhorse.
+  # Codex model ids carry no date; the slug is the pin. No cost: no first-party price was verified.
+  gpt-6.1-sol:
+    provider: openai
+    runtime: codex
+    privacy_class: vendor-cloud
+    capabilities: [tool_use, structured_output]
 classes:
   high-reasoning: claude-opus-5-5
-  independent: claude-opus-5-5 # a different class from the implementer's; Codex once there is a key (step 12)
+  independent: claude-opus-5-5 # a different class from the implementer's; locked: no Codex key in the MVP
   strong-coding: claude-sonnet-5-5
   cheap: claude-haiku-5-5
+# Used only when a run selects the runtime (`agent-team run --runtime codex`); classes above stay the default.
+runtime_classes:
+  codex:
+    independent: gpt-6.1-sol

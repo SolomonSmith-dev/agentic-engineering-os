@@ -59,6 +59,24 @@ After changing the adapter, the sandbox or the run path, run the opt-in live che
 AGENT_TEAM_LIVE=1 uv run pytest -q -m live
 ```
 
+## Run the reviewer on Codex
+
+`agent-team run --runtime codex` runs the independent reviewer through `codex exec --json` instead of Claude Code (build-order step 12). It is opt-in: the locked MVP reviewer stays on Claude, and `--runtime codex` is accepted only for `independent-reviewer`. **This adapter has not been run against a real Codex yet**: there is no Codex key in the MVP, and every test drives a fake `codex` that replays the JSONL event stream.
+
+```bash
+codex login            # or set CODEX_API_KEY for the shell
+agent-team run --agent independent-reviewer --runtime codex \
+  --repo /path/to/target --test-command "uv run pytest" --prompt-file review-request.md
+```
+
+- The model comes from `runtime_classes.codex` in `routing/registry.yaml`: `independent` resolves to `gpt-6.1-sol` there, and to `claude-opus-5-5` everywhere else. `--model` must name a registry entry on the codex runtime.
+- The run is refused before anything is recorded when `codex` is not on PATH, has no auth (`CODEX_API_KEY` unset and `codex login status` failing; its output is never read), lacks a flag the adapter passes, or when `srt` is absent.
+- Compiled files go to `.agent-team/compiled/<run-id>/`: `agents/independent-reviewer.toml` (the Codex agent shape), `config.toml` (the session settings, passed as `-c key=value`) and `schema.json` (the verdict schema in OpenAI strict form, passed as `--output-schema`). Nothing is written into the target repository's `.codex/`.
+- Codex has no per-command permission rules and this adapter uses no Codex hook, so the reviewer runs in Codex's `read-only` sandbox, and protected paths (`.env*`, `*.pem`, `~/.ssh`, `~/.claude`, `.agent-team/` apart from the run's own checkout) become srt `denyRead` rules that hold for Codex and every command it runs. That is why srt is required. The srt allowlist gains only the hosts the auth mode needs (`chatgpt.com` and `auth.openai.com` for a login, `api.openai.com` for an API key).
+- The session ignores your `~/.codex/config.toml` and execpolicy rules and writes no session file (`--ignore-user-config --ignore-rules --ephemeral`). Shell commands get only core environment variables, never one named like a key, secret or token.
+- Codex reports tokens, not dollars, and has no budget flag. Cost is recorded only when the registry entry has a `cost` (none does yet), and `--max-budget-usd` is then checked after the run ends; otherwise `--timeout` is the only cap. The run record's transition note lists every capability the Codex runtime ran without.
+- Known gap: `~/.codex` stays readable inside the sandbox, because Codex reads its own login there, so the reviewer's commands can read it too. The srt network allowlist is what limits where it could go.
+
 ## Environments
 
 Each run gets its own git worktree at `.agent-team/worktrees/<run-id>/` on branch `agent-team/<run-id>`, cut from `HEAD`. Gitignored files listed in `.worktreeinclude` (gitignore syntax, the same convention Claude Code uses) are copied in; tracked files, symlinks and `.agent-team/` never are. Each worktree gets a port slot, exported as `AGENT_TEAM_PORT_OFFSET` (slot × `ports.block_size`), so parallel dev servers do not collide.

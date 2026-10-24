@@ -44,7 +44,18 @@ def test_unknown_class_and_wrong_runtime_are_refused() -> None:
     with pytest.raises(RegistryError, match="not in the model registry"):
         resolve_model(registry(), "nonexistent", runtime="claude")
     with pytest.raises(RegistryError, match="runs on claude, not codex"):
-        resolve_model(registry(), "independent", runtime="codex")
+        resolve_model(registry(), "strong-coding", runtime="codex")
+    with pytest.raises(RegistryError, match="runs on codex, not claude"):
+        resolve_model(registry(), "independent", runtime="claude", override="gpt-6.1-sol")
+
+
+def test_codex_runtime_resolves_the_independent_class_without_changing_the_default() -> None:
+    reg = registry()
+    assert reg.classes["independent"] == "claude-opus-5-5", "the locked default: no Codex key in the MVP"
+    resolved = resolve_model(reg, "independent", runtime="codex")
+    assert resolved.model == "gpt-6.1-sol" and resolved.fallbacks == ()
+    assert reg.models["gpt-6.1-sol"].runtime == "codex" and reg.models["gpt-6.1-sol"].provider == "openai"
+    assert resolve_model(reg, "independent", runtime="claude").model == "claude-opus-5-5"
 
 
 def test_override_must_name_a_registry_model() -> None:
@@ -74,6 +85,9 @@ def test_policy_privacy_pin_refuses_the_model_and_drops_fallbacks() -> None:
         (lambda d: d["models"]["claude-opus-5-5"].update({"fallbacks": ["gone"]}), "falls back to 'gone'"),
         (lambda d: d["classes"].update({"opus-tier": "claude-opus-5-5"}), "names a vendor or model"),
         (lambda d: d["models"]["claude-haiku-5-5"].update({"privacy_class": "public"}), "privacy_class"),
+        (lambda d: d["runtime_classes"]["codex"].update({"independent": "claude-opus-5-5"}), "runs on claude"),
+        (lambda d: d["runtime_classes"]["codex"].update({"cheap": "gpt-missing"}), "has no entry under models"),
+        (lambda d: d["runtime_classes"]["codex"].update({"gpt-tier": "gpt-6.1-sol"}), "names a vendor or model"),
     ],
 )
 def test_invalid_registries_are_rejected(mutate, message: str) -> None:
@@ -85,8 +99,7 @@ def test_invalid_registries_are_rejected(mutate, message: str) -> None:
 
 def test_fallback_must_share_the_runtime() -> None:
     data = raw()
-    data["models"]["gpt-5.1-codex"] = {"provider": "openai", "runtime": "codex", "privacy_class": "vendor-cloud"}
-    data["models"]["claude-opus-5-5"]["fallbacks"] = ["gpt-5.1-codex"]
+    data["models"]["claude-opus-5-5"]["fallbacks"] = ["gpt-6.1-sol"]
     with pytest.raises(ValidationError, match="same runtime"):
         RegistrySpec.model_validate(data)
 

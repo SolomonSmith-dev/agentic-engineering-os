@@ -2,7 +2,8 @@
 
 The registry lives at `routing/registry.yaml`, next to `canonical/`. Resolution
 is a lookup: class -> model entry -> that entry's fallbacks, filtered to the
-runtime that will run the agent and the privacy classes the policy allows.
+runtime that will run the agent and the privacy classes the policy allows. A
+class listed under `runtime_classes` for the run's runtime resolves there first.
 """
 
 from dataclasses import dataclass
@@ -70,6 +71,8 @@ def resolve_model(
         if override not in registry.models:
             raise RegistryError(f"--model {override!r} has no entry in the model registry; known: {', '.join(registry.models)}")
         model = override
+    elif model_class in registry.runtime_classes.get(runtime, {}):
+        model = registry.runtime_classes[runtime][model_class]
     elif model_class not in registry.classes:
         raise RegistryError(f"model class {model_class!r} is not in the model registry; known: {', '.join(registry.classes)}")
     else:
