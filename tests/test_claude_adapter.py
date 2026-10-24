@@ -266,6 +266,7 @@ def test_login_mode_keeps_repo_settings_out_without_bare(tmp_path: Path) -> None
     assert "--strict-mcp-config" in argv and "--no-session-persistence" in argv
     assert json.loads(argv[argv.index("--json-schema") + 1]) == ReviewVerdict.model_json_schema()
     assert inv.env == {"PATH": "/usr/bin", "HOME": "/home/u", "LANG": "C.UTF-8",
+                       "CLAUDE_CODE_TMPDIR": str(tmp_path / "t"),
                        "TMPDIR": str(tmp_path / "t"), "AGENT_TEAM_PORT_OFFSET": "100"}  # fmt: skip
 
 
@@ -286,6 +287,7 @@ def test_sandboxed_invocation_is_wrapped_in_srt(tmp_path: Path) -> None:
     assert inv.argv[:6] == ["/usr/bin/srt", "--settings", str(settings), "--", "env", f"TMPDIR={tmp_path / 't'}"]
     assert inv.argv[6:8] == ["/bin/claude", "-p"]
     assert "TMPDIR" not in inv.env
+    assert inv.env["CLAUDE_CODE_TMPDIR"] == str(tmp_path / "t"), "Claude Code's own temp files stay writable"
 
 
 # --- stream parsing -------------------------------------------------------------

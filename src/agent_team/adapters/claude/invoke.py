@@ -107,6 +107,9 @@ def build_invocation(
     if compiled.schema_json is not None:
         argv += ["--json-schema", compiled.schema_json.read_text(encoding="utf-8")]
     env = {k: base_env[k] for k in ENV_ALLOWLIST if k in base_env}
+    # Claude Code keeps its own Bash working files under $CLAUDE_CODE_TMPDIR/claude-<uid>/,
+    # /tmp by default on macOS, which srt does not let the worker write. Use the run's temp dir.
+    env["CLAUDE_CODE_TMPDIR"] = str(sandbox.tmp_dir)
     if mode == "bare":
         env["ANTHROPIC_API_KEY"] = base_env["ANTHROPIC_API_KEY"]
     return Invocation(argv=sandbox.wrap(argv), env=sandbox.env(env), mode=mode)
