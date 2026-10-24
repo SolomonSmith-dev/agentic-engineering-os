@@ -140,11 +140,17 @@ class StreamParser:
         except json.JSONDecodeError:
             self.unparsed += 1
             return
+        # The stream carries event shapes this parser does not know (system notices whose
+        # `message` is a string, for one); anything that is not the shape below is skipped.
+        if not isinstance(event, dict):
+            self.unparsed += 1
+            return
         kind = event.get("type")
         if kind == "result":
             self.result = event
             return
-        content = (event.get("message") or {}).get("content")
+        message = event.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
         if not isinstance(content, list):
             return
         for block in content:

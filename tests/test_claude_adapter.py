@@ -310,7 +310,8 @@ def _parse(*events: dict) -> StreamParser:
     from datetime import UTC, datetime
 
     parser = StreamParser()
-    for i, line in enumerate([*_lines(*events), "not json\n", "\n"]):
+    odd = ['{"type": "system", "subtype": "notice", "message": "a string, not an object"}\n', "[1, 2]\n", '"text"\n']
+    for i, line in enumerate([*odd, *_lines(*events), "not json\n", "\n"]):
         parser.feed(line, float(i), datetime(2026, 10, 24, tzinfo=UTC))
     return parser
 
@@ -321,7 +322,7 @@ def test_parser_pairs_tool_calls_and_reads_the_result() -> None:
                     "permission_denials": [{"tool_name": "Read", "tool_use_id": "t2"}],
                     "structured_output": VERDICT}  # fmt: skip
     parser = _parse({"type": "system", "subtype": "init"}, TOOL_USE, TOOL_RESULT, result_event)
-    assert parser.unparsed == 1
+    assert parser.unparsed == 3, "non-object events and bad JSON are skipped, never fatal"
     assert [c.name for c in parser.calls.values()] == ["Bash", "Read"]
     result = normalize(parser, exit_code=0, timed_out=False, stderr="", output_model=ReviewVerdict)
     assert result.status == "succeeded" and result.cost_usd == 0.42 and result.num_turns == 3
