@@ -6,8 +6,10 @@ through `run_agent` with the fake `claude` from the adapter tests. No test
 calls a model.
 """
 
+import dataclasses
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 from collections.abc import Callable
@@ -107,10 +109,10 @@ def ok(**evidence: Any) -> NodeResult:
 
 def happy() -> Script:
     return {
-        "DISCOVERY": [ok(reproduction_command="uv run pytest tests/test_bug.py", reproduction_fails=True)],
-        "IMPLEMENTATION": [ok(diff="--- a/app.py\n+++ b/app.py\n")],
+        "DISCOVERY": [ok(reproduction_command="uv run pytest tests/test_bug.py", reproduction_fails=True, reproduction_check={})],
+        "IMPLEMENTATION": [ok(diff="--- a/app.py\n+++ b/app.py\n", claimed_changes=[])],
         "TEST": [ok(test_output="1 passed", tests_pass=True)],
-        "CODE_REVIEW": [ok(reviewer_verdict="approve", findings=[])],
+        "CODE_REVIEW": [ok(reviewer_verdict="approve", findings=[], review={})],
         "PR": [ok(pr="draft")],
     }
 
@@ -171,7 +173,7 @@ def test_bug_fix_yaml_validates_and_builds_a_linear_chain(dag) -> None:
         ("retry", "IMPLEMENTATION", "reviewer_verdict == changes", 1),
         ("escalate", "PR", "reviewer_verdict == escalate", None),
     ]
-    assert review.evidence == ("reviewer_verdict", "findings")
+    assert review.evidence == ("reviewer_verdict", "findings", "review")
     assert review.inputs == ("plan", "diff", "test_output"), "the reviewer never sees a transcript"
     assert dag.node("HUMAN_DECISION").terminal
     assert dag.agents == ("implementer", "independent-reviewer")
@@ -260,7 +262,7 @@ def test_happy_path_walks_the_chain_and_checkpoints_every_state(store: RunStore,
 
 def test_changes_gets_one_retry_then_escalates(store: RunStore, dag) -> None:
     script = happy()
-    script["CODE_REVIEW"] = [ok(reviewer_verdict="changes", findings=[FINDING])]
+    script["CODE_REVIEW"] = [ok(reviewer_verdict="changes", findings=[FINDING], review={})]
     record, fake, _ = run_fake(store, dag, script)
     assert path(store, record.run_id) == [
         "INTAKE", "DISCOVERY", "PLAN", "IMPLEMENTATION", "TEST", "CODE_REVIEW",
@@ -278,7 +280,7 @@ def test_changes_gets_one_retry_then_escalates(store: RunStore, dag) -> None:
 
 def test_changes_then_approve_succeeds(store: RunStore, dag) -> None:
     script = happy()
-    script["CODE_REVIEW"] = [ok(reviewer_verdict="changes", findings=[FINDING]), ok(reviewer_verdict="approve", findings=[])]
+    script["CODE_REVIEW"] = [ok(reviewer_verdict="changes", findings=[FINDING], review={}), ok(reviewer_verdict="approve", findings=[], review={})]
     record, fake, _ = run_fake(store, dag, script)
     assert record.outcome == "succeeded"
     assert fake.states().count("IMPLEMENTATION") == 2 and not any(c.escalated for c in fake.calls)
@@ -286,7 +288,7 @@ def test_changes_then_approve_succeeds(store: RunStore, dag) -> None:
 
 def test_escalate_verdict_skips_the_retry(store: RunStore, dag) -> None:
     script = happy()
-    script["CODE_REVIEW"] = [ok(reviewer_verdict="escalate", findings=[FINDING])]
+    script["CODE_REVIEW"] = [ok(reviewer_verdict="escalate", findings=[FINDING], review={})]
     record, fake, _ = run_fake(store, dag, script)
     assert fake.states().count("IMPLEMENTATION") == 1
     assert path(store, record.run_id)[-3:] == ["CODE_REVIEW", "PR", "HUMAN_DECISION"]
@@ -305,7 +307,7 @@ def test_failed_gate_routes_to_blocked(store: RunStore, dag) -> None:
 
 def test_a_string_true_does_not_pass_a_boolean_gate(store: RunStore, dag) -> None:
     script = happy()
-    script["DISCOVERY"] = [ok(reproduction_command="pytest", reproduction_fails="true")]
+    script["DISCOVERY"] = [ok(reproduction_command="pytest", reproduction_fails="true", reproduction_check={})]
     record, _, _ = run_fake(store, dag, script)
     assert path(store, record.run_id)[-1] == "BLOCKED"
 
@@ -315,7 +317,7 @@ def test_missing_evidence_routes_to_blocked(store: RunStore, dag) -> None:
     script["IMPLEMENTATION"] = [ok()]
     record, _, _ = run_fake(store, dag, script)
     assert path(store, record.run_id)[-1] == "BLOCKED" and record.outcome == "blocked"
-    assert "IMPLEMENTATION left no evidence ['diff']" in store.transitions(record.run_id)[-1].note
+    assert "IMPLEMENTATION left no evidence ['diff', 'claimed_changes']" in store.transitions(record.run_id)[-1].note
 
 
 def test_a_node_blocker_routes_to_blocked(store: RunStore, dag) -> None:
@@ -339,7 +341,7 @@ def test_an_executor_error_fails_the_run_and_is_raised(store: RunStore, dag) -> 
 
 def test_one_status_line_per_transition(store: RunStore, dag) -> None:
     script = happy()
-    script["CODE_REVIEW"] = [ok(reviewer_verdict="changes", findings=[FINDING])]
+    script["CODE_REVIEW"] = [ok(reviewer_verdict="changes", findings=[FINDING], review={})]
     record, _, lines = run_fake(store, dag, script)
     assert lines[0] == f"run {record.run_id}  workflow bug-fix"
     assert lines[1:] == [status_line(t) for t in store.transitions(record.run_id)]
@@ -360,7 +362,7 @@ def factory_for(fake: FakeExecutor):
 
 def test_resume_after_an_interrupt_reenters_the_checkpoint(repo: Path) -> None:
     script = happy()
-    script["IMPLEMENTATION"] = [KeyboardInterrupt(), ok(diff="+fix")]
+    script["IMPLEMENTATION"] = [KeyboardInterrupt(), ok(diff="+fix", claimed_changes=[])]
     first = FakeExecutor(script)
     lines: list[str] = []
     with pytest.raises(KeyboardInterrupt):
@@ -460,14 +462,22 @@ def test_resume_refuses_a_run_from_an_older_database(repo: Path) -> None:
 # --- the default executor and the real reviewer path --------------------------------
 
 
-def test_default_executor_names_what_is_missing_until_step_11(repo: Path, dag) -> None:
+def canonical_without_implementer(tmp_path: Path) -> Path:
+    copy = tmp_path / "canonical-copy" / "canonical"
+    shutil.copytree(CANONICAL, copy)
+    shutil.copytree(CANONICAL.parent / "routing", copy.parent / "routing")
+    (copy / "agents" / "implementer.md").unlink()
+    return copy
+
+
+def test_default_executor_runs_every_bug_fix_node_and_names_what_is_missing(repo: Path, dag, tmp_path: Path) -> None:
     executor = DefaultExecutor(repo=repo, canonical_dir=CANONICAL, canonical=load_canonical(CANONICAL),
                                claude="claude", max_budget_usd=1.0, timeout_s=60)  # fmt: skip
-    assert executor.unavailable(dag) == [
-        f"agent 'implementer' is not in {CANONICAL}",
-        "in-process step 'test' is not implemented yet",
-        "in-process step 'pr' is not implemented yet",
-    ]
+    assert executor.unavailable(dag) == []
+    copy = canonical_without_implementer(tmp_path)
+    executor = DefaultExecutor(repo=repo, canonical_dir=copy, canonical=load_canonical(copy),
+                               claude="claude", max_budget_usd=1.0, timeout_s=60)  # fmt: skip
+    assert executor.unavailable(dag) == [f"agent 'implementer' is not in {copy}"]
 
 
 def test_reviewer_node_runs_through_run_agent(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -505,8 +515,9 @@ def test_missing_agent_at_run_time_blocks(repo: Path, dag) -> None:
     executor = DefaultExecutor(repo=repo, canonical_dir=CANONICAL, canonical=load_canonical(CANONICAL),
                                claude="claude", max_budget_usd=1.0, timeout_s=60)  # fmt: skip
     given = NodeInput(run_id="20261024-090000-abcdef", workflow="bug-fix", state="IMPLEMENTATION", attempt=1, task="t", inputs={})
-    result = executor(dag.node("IMPLEMENTATION"), given)
-    assert result.blocked and "no canonical agent named 'implementer'" in result.blocked
+    node = dataclasses.replace(dag.node("IMPLEMENTATION"), agent="debugger")
+    result = executor(node, given)
+    assert result.blocked and "no canonical agent named 'debugger'" in result.blocked
 
 
 # --- CLI -----------------------------------------------------------------------------
@@ -517,8 +528,9 @@ def claude_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli, "_which", lambda name: f"/opt/bin/{name}")
 
 
-def test_cli_workflow_refuses_before_recording_until_step_11(repo: Path, claude_on_path) -> None:
-    result = runner.invoke(app, ["run", "--workflow", "bug-fix", "--repo", str(repo), "--canonical", str(CANONICAL), "Fix it."])
+def test_cli_workflow_refuses_before_recording_when_an_agent_is_missing(repo: Path, claude_on_path, tmp_path: Path) -> None:
+    copy = canonical_without_implementer(tmp_path)
+    result = runner.invoke(app, ["run", "--workflow", "bug-fix", "--repo", str(repo), "--canonical", str(copy), "Fix it."])
     assert result.exit_code == 2
     assert "workflow bug-fix cannot run yet: agent 'implementer'" in result.output
     assert RunStore.open(repo, create=False) is None
@@ -540,7 +552,7 @@ def test_cli_run_mode_flags(repo: Path, claude_on_path, argv: list[str]) -> None
 
 def test_cli_workflow_run_interrupt_and_resume(repo: Path, claude_on_path, monkeypatch: pytest.MonkeyPatch) -> None:
     script = happy()
-    script["CODE_REVIEW"] = [KeyboardInterrupt(), ok(reviewer_verdict="approve", findings=[])]
+    script["CODE_REVIEW"] = [KeyboardInterrupt(), ok(reviewer_verdict="approve", findings=[], review={})]
     fake = FakeExecutor(script)
     monkeypatch.setattr(cli, "default_executor_factory", lambda **_: factory_for(fake))
     base = ["--repo", str(repo), "--canonical", str(CANONICAL)]

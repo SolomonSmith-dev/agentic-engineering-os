@@ -2,7 +2,7 @@
 
 `agent-team` runs Claude Code workers and an independent reviewer inside sandboxed git worktrees, records every run in SQLite, and gates pull requests on the reviewer's verdict.
 
-Status: build-order step 6 of 15, version 0.1.0. The CLI answers `--version`, checks the host (`agent-team doctor`), runs one canonical agent end to end (`agent-team run --agent`), reads the run record (`agent-team trace`), sweeps stale run worktrees (`agent-team env sweep`), validates `canonical/` against the pydantic schemas (`agent-team validate`) and exports them as JSON Schema (`agent-team schema export`). See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the target design and build order.
+Status: build-order steps 1 to 8 and 10 to 12 of 15 are merged, version 0.1.0. The CLI answers `--version`, checks the host (`agent-team doctor`), discovers and configures a target repository (`agent-team init`, `agent-team configure`), runs one canonical agent end to end (`agent-team run --agent`, on Claude Code or, for the reviewer, Codex), runs the bug-fix workflow from reproduction to a draft PR (`agent-team run --workflow bug-fix`, `agent-team resume`), reads the run record (`agent-team trace`), sweeps stale run worktrees (`agent-team env sweep`), validates `canonical/` against the pydantic schemas (`agent-team validate`) and exports them as JSON Schema (`agent-team schema export`). See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the target design and build order.
 
 ## Install
 
@@ -100,7 +100,29 @@ agent-team run --workflow bug-fix --repo /path/to/target "Fix the crash on empty
 agent-team resume <run-id> --repo /path/to/target
 ```
 
-Until build-order step 11 lands the implementer agent and the `test` and `pr` steps, `run --workflow bug-fix` refuses before recording anything and names what is missing.
+A workflow whose agents or steps the executor does not have refuses before recording anything and names what is missing.
+
+## Implementer, evidence and the draft PR
+
+Build-order step 11 completes the bug-fix workflow: the `implementer` agent (`canonical/agents/implementer.md`, model class `strong-coding`, at most A3), the orchestrator-run `test` step, and the `pr` step that opens a draft pull request through `gh`.
+
+```bash
+agent-team run --workflow bug-fix --repo /path/to/target \
+  --test-command "uv run pytest" --lint-command "uv run ruff check ." --typecheck-command "uv run mypy ." \
+  "Fix the crash on empty input."
+```
+
+- **One worktree per workflow run.** The run owns `.agent-team/worktrees/<run-id>/` on branch `agent-team/<run-id>`. The implementer works there in DISCOVERY (it commits a failing regression check and names the command that runs it), in IMPLEMENTATION, and in the retry, so the retry builds on attempt one's commits. Each call is still a fresh `claude -p` process with its own child run; the retry gets the plan and the reviewer's findings, never attempt one's output.
+- **The agent's word is a claim.** After each implementer call the orchestrator checks the worktree is still on the run branch above its base, commits anything left uncommitted, and takes that commit as the one everything else uses: it re-runs the reproduction command in the sandbox before the fix (the DISCOVERY gate is what it saw, not what the agent said), cuts the diff from the branch, and compares the files this attempt committed with the files the implementer's report names.
+- **TEST** runs the reproduction command, then every test, lint and type-check command it knows (the `--test-command`, `--lint-command` and `--typecheck-command` flags, plus the verified ones in `.agent-team/config.yaml` from `configure`), inside srt, from the worktree, at exactly the diff's head, with the worker's scrubbed environment. All must pass. A kind with no command is skipped and named in the run record and the PR body.
+- **CODE_REVIEW** runs the reviewer in a fresh worktree of its own, cut at that same commit. Its prompt carries the plan, the diff and the check output, inlined from files; never the implementer's transcript or report. A blocker or major finding turns an `approve` into `changes`.
+- **Artifacts** are files under `.agent-team/artifacts/<run-id>/`: `reproduction.log`, `diff-<n>.patch`, `test-<n>.log`, `review-<n>.json` and `pr-body.md`. The checkpoint holds their paths, sizes and hashes, not their content.
+- **PR** pushes exactly the reviewed commit to `agent-team/<run-id>` on `origin` (never `--force`, never another branch, repository hooks off) and runs `gh pr create --draft --head agent-team/<run-id>`. It needs the `github.pr.create` tool in `canonical/tools/`, an A3 run (which needs srt), `draft_prs` not turned off in the approved proposal, and the policy's `required_gates` passed. The body carries the evidence summary, the verdict, the unresolved risks and the minor findings as follow-up checkboxes. An escalated run's draft is titled `[blocked]` and lists the blocking findings.
+- **The GitHub credential stays with the orchestrator.** `git push` and `gh` run in the orchestrator's own process, outside every sandbox. Workers get a scrubbed environment (no `GH_TOKEN`), their sandbox cannot read `~/.config/gh`, `~/.git-credentials` or `~/.netrc`, and `gh` is a denied command in every compiled session.
+- **When no PR can be opened** (gh missing or not logged in, no `origin`, the push or `gh pr create` failing, a run below A3, draft PRs not approved), the run still reaches HUMAN_DECISION, ends `blocked`, keeps the branch, and records why; `pr-body.md` is ready for a human to use.
+- **Without srt** the implementer runs at A2 with no Bash and no commits of its own (the orchestrator commits its edits), the orchestrator runs no command at all, and the run ends BLOCKED at TEST with the branch kept. Every command it would run executes code the agent wrote, and the reproduction command comes from the agent itself.
+
+`agent-team env sweep` later disposes the workflow worktree like any other ended run's, deleting the local branch after saving its commits as a patch; a pushed branch stays on the remote.
 
 ## Run the reviewer on Codex
 
@@ -124,7 +146,7 @@ agent-team run --agent independent-reviewer --runtime codex \
 
 Each run gets its own git worktree at `.agent-team/worktrees/<run-id>/` on branch `agent-team/<run-id>`, cut from `HEAD`. Gitignored files listed in `.worktreeinclude` (gitignore syntax, the same convention Claude Code uses) are copied in; tracked files, symlinks and `.agent-team/` never are. Each worktree gets a port slot, exported as `AGENT_TEAM_PORT_OFFSET` (slot × `ports.block_size`), so parallel dev servers do not collide.
 
-When `srt` is installed, commands run inside it: no network except the allowlist in `canonical/environments/default.yaml`, writes only in the worktree, the run's temp directory and `.git` (minus `.git/hooks` and `.git/config`), and no reads of `~/.ssh` or `~/.aws`. The settings file lives in `.agent-team/sandbox/`, outside the worktree. Without `srt` the run falls back to the worktree alone and its autonomy is capped at A2.
+When `srt` is installed, commands run inside it: no network except the allowlist in `canonical/environments/default.yaml`, writes only in the worktree, the run's temp directory and `.git` (minus `.git/hooks` and `.git/config`), and no reads of `~/.ssh`, `~/.aws` or the GitHub credentials (`~/.config/gh`, `~/.git-credentials`, `~/.netrc`). The settings file lives in `.agent-team/sandbox/`, outside the worktree. Without `srt` the run falls back to the worktree alone and its autonomy is capped at A2.
 
 One run per repository: `.agent-team/lock` holds the live run's PID, and a lock left by a dead process is taken over. Disposing a worktree never drops work silently: uncommitted changes and commits past the base are saved to `.agent-team/archive/<run-id>.patch` first.
 

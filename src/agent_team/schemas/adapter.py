@@ -58,6 +58,28 @@ class ReviewVerdict(BaseModel):
     findings: list[ReviewFinding] = Field(default_factory=list)
 
 
+class ClaimedChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    file: str = Field(min_length=1)
+    summary: str = Field(min_length=1)
+
+
+class ImplementerReport(BaseModel):
+    """The implementer's output (step 11). Claims only: the orchestrator re-runs the reproduction and reads the diff itself.
+
+    In DISCOVERY `reproduction_fails` claims the command fails before any fix; in
+    IMPLEMENTATION it claims the command still fails (false once fixed).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reproduction_command: str = Field(min_length=1, description="One shell command that exits non-zero while the bug exists.")
+    reproduction_fails: bool
+    changes: list[ClaimedChange] = Field(default_factory=list, description="Files the implementer says it changed, and why.")
+
+
 OUTPUT_SCHEMAS: dict[str, type[BaseModel]] = {
     "review_verdict": ReviewVerdict,
+    "implementer_report": ImplementerReport,
 }

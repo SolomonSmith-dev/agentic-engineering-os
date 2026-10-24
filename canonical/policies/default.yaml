@@ -2,6 +2,7 @@ kind: policy
 name: default
 autonomy_ceiling:
   independent-reviewer: A2
+  implementer: A3 # branch, commit, draft PR; A3 also needs srt, or the run is capped at A2
 protected_paths: [".env*", "~/.claude/**", ".agent-team/**"]
 denied_capabilities: [git.push.main, fs.write.home]
 redaction:

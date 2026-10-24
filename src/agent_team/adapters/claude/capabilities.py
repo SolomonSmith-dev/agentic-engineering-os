@@ -4,6 +4,13 @@ A capability absent from an agent's allow list does not exist for that agent:
 the session runs in `dontAsk`, so any call no allow rule covers is denied.
 Each capability also has a minimum autonomy level; a capability above the
 run's ceiling is dropped and reported, never silently granted.
+
+Write and execute capabilities stay inside the run's worktree (the session's
+working directory): `fs.write.workspace` allows Edit and Write only under
+`./**`, and the PreToolUse hook refuses a file write that resolves outside the
+worktree. No permission rule can confine Bash, so `shell.execute.workspace`
+is granted only when the session runs inside srt, whose write allowlist is the
+worktree, the run's temp directory and the run branch's corner of `.git`.
 """
 
 from collections.abc import Iterable, Sequence
@@ -20,11 +27,14 @@ CAPABILITY_RULES: dict[str, tuple[Autonomy, tuple[str, ...]]] = {
         + ("Bash(git blame *)",),
     ),
     "shell.read": ("A0", ("Bash(ls)", "Bash(ls *)", "Bash(pwd)", "Bash(wc *)", "Bash(head *)", "Bash(tail *)")),
-    "fs.write.workspace": ("A2", ("Edit", "Write")),
+    "fs.write.workspace": ("A2", ("Edit(./**)", "Write(./**)")),
     "shell.execute.workspace": ("A2", ("Bash",)),
     "test.run": ("A2", ()),  # rules come from the repo's detected test commands
     "git.commit": ("A3", ("Bash(git add *)", "Bash(git commit *)")),
 }
+
+# Granted only inside srt: nothing but the sandbox keeps them inside the worktree.
+SANDBOX_ONLY: tuple[str, ...] = ("shell.execute.workspace",)
 
 # Capabilities the orchestrator exercises itself, outside the worker: the agent never gets them.
 ORCHESTRATOR_CAPABILITIES: tuple[str, ...] = ("git.write.branch", "github.pr.create", "github.pr.review")
@@ -37,6 +47,7 @@ DENIED_COMMANDS: tuple[str, ...] = (
     "git branch -D",
     "git reset --hard",
     "git config",
+    "gh",  # github.* is the orchestrator's, and so is the credential gh would use
 )
 
 ALWAYS_DENY: tuple[str, ...] = (
@@ -83,8 +94,9 @@ def resolve(
     ceiling: Autonomy,
     *,
     test_commands: Sequence[str] = (),
+    sandboxed: bool = False,
 ) -> Permissions:
-    """Permission rules for one agent at one autonomy ceiling."""
+    """Permission rules for one agent at one autonomy ceiling; `sandboxed` says whether srt wraps the session."""
     allow_rules: list[str] = []
     granted: list[str] = []
     dropped: list[str] = []
@@ -101,6 +113,9 @@ def resolve(
         minimum, rules = CAPABILITY_RULES[capability]
         if AUTONOMY_ORDER[minimum] > AUTONOMY_ORDER[ceiling]:
             dropped.append(f"{capability}: needs {minimum}, ceiling is {ceiling}")
+            continue
+        if capability in SANDBOX_ONLY and not sandboxed:
+            dropped.append(f"{capability}: needs srt; outside it Bash is not confined to the worktree")
             continue
         if capability == "test.run":
             rules = tuple(r for cmd in test_commands for r in (f"Bash({cmd})", f"Bash({cmd} *)"))

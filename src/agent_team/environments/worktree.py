@@ -132,8 +132,9 @@ def create(
     store: RunStore | None = None,
     srt: str | None = None,
     home: Path | None = None,
+    base: str | None = None,
 ) -> Environment:
-    """Allocate a worktree for `run_id` at HEAD, copy `.worktreeinclude` files, prepare the sandbox.
+    """Allocate a worktree for `run_id` at `base` (HEAD by default), copy `.worktreeinclude` files, prepare the sandbox.
 
     When `store` is given, the worktree path is written to the run's record.
     """
@@ -145,8 +146,10 @@ def create(
     if path.exists() or _meta_path(root, run_id).exists():
         raise AllocatorError(f"run {run_id} already has a worktree at {path}")
 
-    head = _git(root, "rev-parse", "--verify", "--quiet", "HEAD^{commit}", check=False)
+    head = _git(root, "rev-parse", "--verify", "--quiet", f"{base or 'HEAD'}^{{commit}}", check=False)
     if head.returncode != 0:
+        if base is not None:
+            raise AllocatorError(f"{base!r} is not a commit in {root}")
         raise AllocatorError(f"{root} has no commits; a worktree needs a base commit")
     base = head.stdout.strip()
     branch = f"{BRANCH_PREFIX}{run_id}"
@@ -187,6 +190,35 @@ def create(
         includes_copied=copied,
         includes_skipped=skipped,
     )
+
+
+def attach(
+    repo: Path,
+    run_id: str,
+    spec: EnvironmentSpec,
+    *,
+    requested_autonomy: Autonomy = "A3",
+    srt: str | None = None,
+    home: Path | None = None,
+) -> Environment:
+    """The Environment of a worktree `create` made earlier, for a resumed run; the sandbox settings are rewritten."""
+    _check_run_id(run_id)
+    root = repo_root(repo)
+    meta = read_meta(root, run_id)
+    if meta is None or not (Path(meta.path) / ".git").exists():
+        raise AllocatorError(f"run {run_id} has no worktree to attach to; it was disposed or never created")
+    git_dir = Path(_git(root, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip())
+    sandbox = prepare(
+        spec,
+        run_id=run_id,
+        state_dir=_dirs(root)["state"],
+        worktree=Path(meta.path),
+        git_dir=git_dir,
+        port_offset=ports.offset(meta.port_slot, spec.ports.block_size),
+        home=home,
+        srt=srt,
+    )
+    return Environment(meta=meta, sandbox=sandbox, autonomy_ceiling=effective_ceiling(requested_autonomy, sandbox.sandboxed))
 
 
 def _archive(root: Path, worktree: Path, run_id: str, base: str | None) -> Path | None:

@@ -334,10 +334,13 @@ def test_configure_extends_claude_md_and_writes_only_the_diffed_files(python_rep
     config = RepoConfig.model_validate(yaml.safe_load((python_repo / ".agent-team" / "config.yaml").read_text(encoding="utf-8")))
     assert config.commands == {"build": ["uv build"], "test": ["uv run pytest"]}
     assert config.unverified_commands == {"lint": ["uv run ruff check ."], "typecheck": ["uv run mypy ."]}
-    assert config.instruction_files == ["CLAUDE.md"] and config.agents == [".claude/agents/independent-reviewer.md"]
+    agents = [".claude/agents/implementer.md", ".claude/agents/independent-reviewer.md"]
+    assert config.instruction_files == ["CLAUDE.md"] and config.agents == agents
+    implementer = (python_repo / agents[0]).read_text(encoding="utf-8")
+    assert "- `Edit(./**)`" in implementer and "- `Bash`\n" not in implementer, "srt does not wrap these: no unconfined Bash"
 
     status = git(python_repo, "status", "--porcelain", "--untracked-files=all").splitlines()
-    assert sorted(status) == [" M CLAUDE.md", "?? .claude/agents/independent-reviewer.md"]
+    assert sorted(status) == [" M CLAUDE.md", *(f"?? {a}" for a in agents)]
 
 
 def test_configure_is_idempotent_and_updates_the_block_in_place(python_repo: Path) -> None:
