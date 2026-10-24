@@ -29,6 +29,10 @@ class PortPolicy(CanonicalModel):
     )
 
 
+# An absolute path, or one under the home directory (~/...).
+DenyReadPath = Annotated[str, StringConstraints(pattern=r"^(/|~/)\S")]
+
+
 class EnvironmentSpec(CanonicalModel):
     kind: Literal["environment"]
     name: KebabName
@@ -36,3 +40,8 @@ class EnvironmentSpec(CanonicalModel):
     tier: Tier
     network: NetworkPolicy = Field(default_factory=NetworkPolicy)
     ports: PortPolicy = Field(default_factory=PortPolicy)
+    deny_read: list[DenyReadPath] = Field(
+        default_factory=list,
+        description="Paths srt keeps unreadable, on top of the credentials it always denies. The eval (step 13) "
+        "adds its tasks, fixtures and results here so no arm can read a hidden verifier.",
+    )

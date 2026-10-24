@@ -1,0 +1,17 @@
+# Location given; an off-by-one beside a function that must not change.
+id: date-range-inclusive
+kind: fix-bug
+repo: fixture:date-range-inclusive
+ref: c79bee3ddd05136afc10abd470281c389b1bdf70 # the commit the fixture materializes to; a changed fixture is refused
+instruction: "`cal.ranges.days_in_range` in cal/ranges.py drops the last day: `days_in_range(date(2024, 2, 27), date(2024, 3, 1))` returns three days, but its docstring says both ends are included, so it should return four. Fix it without changing `nights`."
+test_command: python3 -m unittest
+existing_tests:
+  - python3 -m unittest tests.test_ranges.RangesTest.test_backwards_is_empty
+  - python3 -m unittest tests.test_ranges.RangesTest.test_nights
+planned_files:
+  - cal/ranges.py
+  - tests/** # a regression test is planned work
+verifier: # hidden: copied over the agent's tree only after the arm ends
+  command: python3 -m unittest tests.test_hidden_ranges
+  files: ../fixtures/date-range-inclusive/verifier
+  timeout_s: 120

@@ -1,0 +1,18 @@
+# Symptom only: the shallow merge in cfg/merge.py; the loader and env parser are red herrings.
+id: config-merge
+kind: locate-bug
+repo: fixture:config-merge
+ref: 6389e2ac9b22d31c29caa320807b0e404e8ab730 # the commit the fixture materializes to; a changed fixture is refused
+instruction: "With the defaults {db: {host: localhost, port: 5432}} and a user settings file containing {\"db\": {\"port\": 6543}}, the loaded settings lose db.host entirely. A user file should override only the keys it names, at any depth, and the environment layer the same way. Find the cause and fix it."
+test_command: python3 -m unittest
+existing_tests:
+  - python3 -m unittest tests.test_cfg.CfgTest.test_defaults_alone
+  - python3 -m unittest tests.test_cfg.CfgTest.test_env_parsing
+  - python3 -m unittest tests.test_cfg.CfgTest.test_top_level_override
+planned_files:
+  - cfg/merge.py
+  - tests/** # a regression test is planned work
+verifier: # hidden: copied over the agent's tree only after the arm ends
+  command: python3 -m unittest tests.test_hidden_merge
+  files: ../fixtures/config-merge/verifier
+  timeout_s: 120

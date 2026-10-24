@@ -1,0 +1,18 @@
+# A flag and an output format; the plain output is guarded.
+id: wc-json-flag
+kind: small-feature
+repo: fixture:wc-json-flag
+ref: 7fcc02698c9c7c9a4378b97856e14601d2151dca # the commit the fixture materializes to; a changed fixture is refused
+instruction: "Add a `--json` flag to the wc command (wc/cli.py). With it, print one JSON object instead of the plain line: {\"file\": <the path as given>, \"lines\": <n>, \"words\": <n>, \"chars\": <n>}. The flag may come before or after the file. Without it, the output must not change."
+test_command: python3 -m unittest
+existing_tests:
+  - python3 -m unittest tests.test_wc.WcTest.test_count
+  - python3 -m unittest tests.test_wc.WcTest.test_cli_plain
+planned_files:
+  - wc/cli.py
+  - README.md
+  - tests/** # a regression test is planned work
+verifier: # hidden: copied over the agent's tree only after the arm ends
+  command: python3 -m unittest tests.test_hidden_json
+  files: ../fixtures/wc-json-flag/verifier
+  timeout_s: 120
