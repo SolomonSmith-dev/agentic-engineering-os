@@ -1,7 +1,7 @@
 """What a runtime adapter returns, and the structured outputs agents emit (build-order step 6).
 
-`AdapterResult` is runtime-neutral: the Claude adapter fills it today, the
-Codex adapter (step 12) fills the same shape. `OUTPUT_SCHEMAS` maps an agent
+`AdapterResult` is runtime-neutral: the Claude adapter (step 6) and the Codex
+adapter (step 12) fill the same shape. `OUTPUT_SCHEMAS` maps an agent
 output name to the model its structured output must validate against; the
 adapter passes that model's JSON Schema to the runtime.
 """
@@ -22,12 +22,16 @@ class AdapterResult(BaseModel):
     result: str | None = None
     structured_output: dict[str, Any] | None = None
     structured_output_error: str | None = None
+    reason: str | None = Field(
+        default=None, description="Why the run did not succeed, in the adapter's words, when the subtype does not say."
+    )
     cost_usd: float = Field(default=0.0, ge=0)
     num_turns: int | None = None
     duration_ms: int | None = None
     session_id: str | None = None
     tool_calls: int = Field(default=0, ge=0)
     permission_denials: list[str] = Field(default_factory=list, description="Tool names the runtime denied.")
+    usage: dict[str, int] | None = Field(default=None, description="Token counts as the runtime reports them.")
     exit_code: int | None = None
     stderr_tail: str | None = Field(default=None, description="Redacted end of stderr when the run failed.")
 

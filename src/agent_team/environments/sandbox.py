@@ -11,6 +11,7 @@ outside the sandbox.
 
 import json
 import shutil
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -97,6 +98,23 @@ class Sandbox:
             env["TMPDIR"] = str(self.tmp_dir)
         env["AGENT_TEAM_PORT_OFFSET"] = str(self.port_offset)
         return env
+
+
+def extend_settings(
+    sandbox: Sandbox, *, deny_read: Sequence[object] = (), allowed_domains: Sequence[str] = ()
+) -> None:
+    """Add read denies and allowed domains to a prepared run's srt settings: a runtime adapter's extras.
+
+    It only narrows reads or names the runtime's own API hosts; writes stay as `prepare` set them.
+    """
+    if sandbox.settings_path is None:
+        raise ValueError("the run is not sandboxed; there are no srt settings to extend")
+    settings = json.loads(sandbox.settings_path.read_text(encoding="utf-8"))
+    denied = settings["filesystem"]["denyRead"]
+    denied.extend(e for e in deny_read if e not in denied)
+    domains = settings["network"]["allowedDomains"]
+    domains.extend(d for d in allowed_domains if d not in domains)
+    sandbox.settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
 
 
 def prepare(

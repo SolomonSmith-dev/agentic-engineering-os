@@ -530,6 +530,7 @@ def test_cli_workflow_refuses_before_recording_until_step_11(repo: Path, claude_
         ["run", "Fix it."],
         ["run", "--agent", "independent-reviewer", "--workflow", "bug-fix", "Fix it."],
         ["run", "--workflow", "bug-fix", "--model", "claude-opus-5-5", "Fix it."],
+        ["run", "--workflow", "bug-fix", "--runtime", "codex", "Fix it."],
     ],
 )
 def test_cli_run_mode_flags(repo: Path, claude_on_path, argv: list[str]) -> None:

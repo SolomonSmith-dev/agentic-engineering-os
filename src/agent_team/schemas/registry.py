@@ -2,7 +2,9 @@
 
 An agent names a model class; the registry maps each class to one model entry,
 and each entry lists the fallbacks its runtime may switch to when the model is
-overloaded or unavailable. Routing is a lookup, not a learned policy.
+overloaded or unavailable. `runtime_classes` maps a class to a model on another
+runtime, used only when a run selects that runtime (the reviewer on Codex, step
+12). Routing is a lookup, not a learned policy.
 """
 
 from typing import Annotated, Literal
@@ -43,6 +45,10 @@ class RegistrySpec(CanonicalModel):
     name: KebabName
     models: dict[ModelId, ModelEntry] = Field(min_length=1)
     classes: dict[KebabName, ModelId] = Field(min_length=1, description="Model class -> model id in `models`.")
+    runtime_classes: dict[Runtime, dict[KebabName, ModelId]] = Field(
+        default_factory=dict,
+        description="Runtime -> model class -> model id on that runtime, for runs that select the runtime.",
+    )
 
     @field_validator("classes")
     @classmethod
@@ -51,11 +57,27 @@ class RegistrySpec(CanonicalModel):
             reject_vendor_names(name)
         return value
 
+    @field_validator("runtime_classes")
+    @classmethod
+    def _runtime_classes_are_not_vendor_names(cls, value: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
+        for classes in value.values():
+            for name in classes:
+                reject_vendor_names(name)
+        return value
+
     @model_validator(mode="after")
     def _references_resolve(self) -> "RegistrySpec":
         for name, model in self.classes.items():
             if model not in self.models:
                 raise ValueError(f"class {name!r} maps to {model!r}, which has no entry under models")
+        for runtime, classes in self.runtime_classes.items():
+            for name, model in classes.items():
+                if model not in self.models:
+                    raise ValueError(f"{runtime} class {name!r} maps to {model!r}, which has no entry under models")
+                if self.models[model].runtime != runtime:
+                    raise ValueError(
+                        f"{runtime} class {name!r} maps to {model!r}, which runs on {self.models[model].runtime}"
+                    )
         for model, entry in self.models.items():
             for fallback in entry.fallbacks:
                 if fallback == model:

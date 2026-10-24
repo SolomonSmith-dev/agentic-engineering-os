@@ -1,12 +1,15 @@
 """Command-line entry point for agent-team."""
 
 import json
+import os
 from pathlib import Path
+from typing import Literal
 
 import typer
 
 from agent_team import __version__
 from agent_team.adapters.claude.invoke import ClaudeVersionError
+from agent_team.adapters.codex.invoke import API_KEY_ENV, CodexUnavailableError, has_auth
 from agent_team.bootstrap import BootstrapError, apply_plan, plan_configure, render_summary, write_proposal
 from agent_team.canonical import validate_tree
 from agent_team.doctor import _which, build_report, render_table
@@ -15,6 +18,9 @@ from agent_team.orchestrator import OrchestratorError, default_executor_factory,
 from agent_team.run_agent import RunAgentError, run_agent
 from agent_team.runs import RunStore, RunStoreError, UnknownRunError, render_run_list, render_trace
 from agent_team.schemas import SCHEMAS, RunRecord, json_schema
+
+# Runtimes `agent-team run --runtime` accepts; codex runs the independent reviewer only (step 12).
+RUNTIMES: tuple[Literal["claude", "codex"], ...] = ("claude", "codex")
 
 app = typer.Typer(
     name="agent-team",
@@ -165,7 +171,10 @@ def trace(
 
 
 # Errors that refuse a run with exit 2: something to fix before anything useful ran.
-REFUSALS = (RunAgentError, ClaudeVersionError, RunStoreError, AllocatorError, LockHeldError, OrchestratorError)
+REFUSALS = (
+    RunAgentError, ClaudeVersionError, CodexUnavailableError, RunStoreError, AllocatorError, LockHeldError,
+    OrchestratorError,
+)
 
 
 def _claude_or_exit() -> str:
@@ -195,6 +204,9 @@ def run(
     model: str | None = typer.Option(
         None, "--model", "-m", help="Override the agent's model class with this registry model id (--agent only)."
     ),
+    runtime: str = typer.Option(
+        "claude", "--runtime", help="Runtime to run the agent on: claude, or codex (the independent reviewer only)."
+    ),
     prompt_file: Path | None = typer.Option(None, "--prompt-file", help="Read the prompt from this file."),
     repo: Path = typer.Option(Path("."), "--repo", "-C", help="Target repository; defaults to the current directory."),
     canonical: Path = typer.Option(Path("canonical"), "--canonical", help="Directory holding the canonical files."),
@@ -222,8 +234,14 @@ def run(
     except (OSError, UnicodeDecodeError) as exc:
         typer.echo(f"error: cannot read --prompt-file {prompt_file}: {exc.strerror or exc}", err=True)
         raise typer.Exit(code=2) from exc
-    claude = _claude_or_exit()
+    if runtime not in RUNTIMES:
+        typer.echo(f"error: --runtime must be one of {', '.join(RUNTIMES)}, not {runtime!r}", err=True)
+        raise typer.Exit(code=2)
     if workflow is not None:
+        if runtime != "claude":
+            typer.echo("error: --runtime applies to --agent runs; a workflow resolves each agent's own runtime", err=True)
+            raise typer.Exit(code=2)
+        claude = _claude_or_exit()
         factory = default_executor_factory(
             repo=repo,
             canonical_dir=canonical,
@@ -243,6 +261,13 @@ def run(
             raise typer.Exit(code=130) from exc
         _workflow_summary(record)
         return
+    binary = _which(runtime)
+    if binary is None:
+        typer.echo(f"error: {runtime} is not on PATH; run 'agent-team doctor'", err=True)
+        raise typer.Exit(code=2)
+    if runtime == "codex" and not has_auth(binary, dict(os.environ)):
+        typer.echo(f"error: codex has no auth: run 'codex login', or set {API_KEY_ENV} for this shell", err=True)
+        raise typer.Exit(code=2)
     try:
         record, result = run_agent(
             repo,
@@ -251,7 +276,9 @@ def run(
             text,
             model=model,
             registry_path=registry,
-            claude=claude,
+            runtime=runtime,  # type: ignore[arg-type]
+            claude=binary if runtime == "claude" else None,
+            codex=binary if runtime == "codex" else None,
             max_budget_usd=budget,
             timeout_s=timeout,
             test_commands=tuple(test_command),
@@ -260,10 +287,13 @@ def run(
     except REFUSALS as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
-    typer.echo(
+    summary = (
         f"{record.outcome}: {result.status} in {result.num_turns or 0} turn(s), "
         f"{result.tool_calls} tool call(s), ${result.cost_usd:.4f}"
     )
+    if result.usage:
+        summary += f", {result.usage.get('input_tokens', 0)} in / {result.usage.get('output_tokens', 0)} out tokens"
+    typer.echo(summary)
     if result.structured_output is not None:
         typer.echo(json.dumps(result.structured_output, indent=2))
     elif result.result:
