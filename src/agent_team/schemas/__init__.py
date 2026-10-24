@@ -12,6 +12,7 @@ from agent_team.schemas.agent import AgentSpec, Capabilities
 from agent_team.schemas.doctor import DoctorReport
 from agent_team.schemas.environment import EnvironmentSpec, NetworkPolicy, PortPolicy
 from agent_team.schemas.policy import PolicySpec, RedactionRule
+from agent_team.schemas.registry import ModelEntry, RegistrySpec
 from agent_team.schemas.runs import (
     RunOutcome,
     RunRecord,
@@ -31,6 +32,7 @@ SCHEMAS: dict[str, type[BaseModel]] = {
     "tool": ToolSpec,
     "policy": PolicySpec,
     "environment": EnvironmentSpec,
+    "registry": RegistrySpec,
 }
 
 SCHEMA_ID_BASE = "https://github.com/SolomonSmith-dev/agentic-engineering-os/schemas"
@@ -52,10 +54,12 @@ __all__ = [
     "DoctorReport",
     "EnvironmentSpec",
     "Implementation",
+    "ModelEntry",
     "NetworkPolicy",
     "PolicySpec",
     "PortPolicy",
     "RedactionRule",
+    "RegistrySpec",
     "RunOutcome",
     "RunRecord",
     "RunState",

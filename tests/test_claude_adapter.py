@@ -128,6 +128,7 @@ def test_compiled_reviewer_matches_snapshot(name: str, tmp_path: Path) -> None:
         policy(),
         ceiling="A2",
         model=MODEL,
+        fallback_models=("claude-sonnet-5-5",),
         out_dir=tmp_path / "compiled",
         roots=[tmp_path / "worktree", tmp_path / "repo"],
         home=tmp_path / "home",
@@ -455,7 +456,7 @@ def fake_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 def invoke_run(repo: Path, *extra: str):
     return runner.invoke(
         app,
-        ["run", "--agent", "independent-reviewer", "--model", MODEL, "--repo", str(repo),
+        ["run", "--agent", "independent-reviewer", "--repo", str(repo),
          "--canonical", str(CANONICAL), "--test-command", "uv run pytest", *extra, "Review the diff against AC-1."],
     )  # fmt: skip
 
@@ -481,12 +482,17 @@ def test_run_reviewer_end_to_end(repo: Path, fake_path) -> None:
     assert run.worktree_path == str(repo / ".agent-team" / "worktrees" / run.run_id)
     assert [t.to_state for t in transitions] == ["INTAKE", "PLAN_REVIEW"], "the agent's first state trigger"
     assert "autonomy ceiling A2" in transitions[1].note
+    assert "model claude-opus-5-5 (class independent, vendor-cloud), fallback claude-sonnet-5-5" in transitions[1].note
     assert [(c.tool_name, c.result_status) for c in calls] == [("Bash", "ok"), ("Bash", "error")]
 
     seen = json.loads((repo / ".agent-team" / "tmp" / run.run_id / "fake-claude.json").read_text())
     assert seen["stdin"] == "Review the diff against AC-1.", "the prompt goes in on stdin"
     assert "Review the diff" not in " ".join(seen["argv"])
     assert seen["cwd"] == run.worktree_path
+    argv = seen["argv"]
+    assert argv[argv.index("--model") + 1] == MODEL, "the registry resolves the independent class"
+    settings = json.loads(Path(argv[argv.index("--settings") + 1]).read_text())
+    assert settings["fallbackModel"] == ["claude-sonnet-5-5"]
     assert "GH_TOKEN" not in seen["env"] and "CLAUDE_CODE_SESSION_ID" not in seen["env"]
     assert seen["hook_exit"] == 2 and "protected by '.env*'" in seen["hook_stderr"], "the hook runs and blocks"
     assert not (repo / ".agent-team" / "lock").exists(), "the lock is released"
@@ -519,6 +525,24 @@ def test_run_while_locked_records_a_blocked_run(repo: Path, fake_path) -> None:
     assert result.exit_code == 2 and "holds" in result.output
     run, transitions, _ = only_run(repo)
     assert run.outcome == "blocked" and transitions[-1].to_state == "BLOCKED"
+
+
+def test_run_model_override_must_be_a_registry_model(repo: Path, fake_path) -> None:
+    fake_path()
+    result = invoke_run(repo, "--model", "claude-haiku-5-5")
+    assert result.exit_code == 0, result.output
+    run, transitions, _ = only_run(repo)
+    assert "model claude-haiku-5-5 (--model override, vendor-cloud), no fallback" in transitions[1].note
+
+    result = invoke_run(repo, "--model", "opus")
+    assert result.exit_code == 2 and "'opus' has no entry in the model registry" in result.output
+
+
+def test_run_without_a_registry_refuses_before_recording(repo: Path, fake_path, tmp_path: Path) -> None:
+    fake_path()
+    result = invoke_run(repo, "--registry", str(tmp_path / "missing.yaml"))
+    assert result.exit_code == 2 and "no model registry at" in result.output
+    assert RunStore.open(repo, create=False) is None
 
 
 def test_run_reports_an_unreadable_prompt_file(repo: Path, fake_path, tmp_path: Path) -> None:

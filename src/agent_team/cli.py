@@ -46,7 +46,7 @@ def main(
 def validate(
     path: Path = typer.Argument(
         Path("canonical"),
-        help="Directory holding agents/, skills/, workflows/, tools/ and policies/.",
+        help="Directory holding agents/, skills/, workflows/, tools/ and policies/; routing/ beside it is checked too.",
     ),
 ) -> None:
     """Validate every file under canonical/ against the canonical schemas."""
@@ -111,10 +111,15 @@ def trace(
 def run(
     prompt: str | None = typer.Argument(None, help="The task for the agent; omit to read it from --prompt-file."),
     agent: str = typer.Option(..., "--agent", "-a", help="Canonical agent to run, e.g. independent-reviewer."),
-    model: str = typer.Option(..., "--model", "-m", help="Model id until the registry (step 7) resolves model classes."),
+    model: str | None = typer.Option(
+        None, "--model", "-m", help="Override the agent's model class with this registry model id."
+    ),
     prompt_file: Path | None = typer.Option(None, "--prompt-file", help="Read the prompt from this file."),
     repo: Path = typer.Option(Path("."), "--repo", "-C", help="Target repository; defaults to the current directory."),
     canonical: Path = typer.Option(Path("canonical"), "--canonical", help="Directory holding the canonical files."),
+    registry: Path | None = typer.Option(
+        None, "--registry", help="Model registry; defaults to routing/registry.yaml next to --canonical."
+    ),
     budget: float = typer.Option(1.00, "--max-budget-usd", min=0.01, help="Stop the worker at this estimated spend."),
     timeout: float = typer.Option(1800, "--timeout", min=1, help="Kill the worker after this many seconds."),
     test_command: list[str] = typer.Option([], "--test-command", help="Test command the agent may run (repeatable)."),
@@ -139,6 +144,7 @@ def run(
             agent,
             text,
             model=model,
+            registry_path=registry,
             claude=claude,
             max_budget_usd=budget,
             timeout_s=timeout,

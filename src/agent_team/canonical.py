@@ -8,6 +8,7 @@ Layout (section 6 of docs/ARCHITECTURE.md):
     canonical/tools/*.yaml
     canonical/policies/*.yaml
     canonical/environments/*.yaml
+    routing/registry.yaml           next to canonical/, validated when present
 
 Every problem is reported as a `Problem(file, field, message)` so the caller
 can print `path: field: message` and the user knows exactly what to fix.
@@ -37,6 +38,9 @@ LAYOUT: dict[str, tuple[str, str]] = {
 }
 
 BODY_REQUIRED = {"agent", "skill"}
+
+# The model registry sits beside canonical/, not inside it (section 6 of docs/ARCHITECTURE.md).
+REGISTRY = Path("routing") / "registry.yaml"
 
 
 @dataclass(frozen=True)
@@ -129,7 +133,8 @@ def validate_document(path: Path, kind: str) -> tuple[Document | None, list[Prob
 
 
 def _cross_check(report: Report) -> None:
-    """Referential rules that span files: an agent's skills must exist."""
+    """Referential rules that span files: an agent's skills and model class must exist."""
+    registries = [d.spec for d in report.documents if d.kind == "registry" and d.spec is not None]
     skills = {d.spec.name for d in report.documents if d.kind == "skill" and d.spec is not None}
     for doc in report.documents:
         if doc.kind != "agent" or doc.spec is None:
@@ -143,6 +148,10 @@ def _cross_check(report: Report) -> None:
                         f"skill {skill!r} has no canonical/skills/{skill}/SKILL.md",
                     )
                 )
+        if registries and doc.spec.model_class not in registries[0].classes:
+            report.problems.append(
+                Problem(doc.path, "model_class", f"model class {doc.spec.model_class!r} is not in {REGISTRY}")
+            )
         if doc.spec.name != doc.path.stem:
             report.problems.append(
                 Problem(doc.path, "name", f"name {doc.spec.name!r} must match file stem {doc.path.stem!r}")
@@ -171,6 +180,13 @@ def validate_tree(root: Path) -> Report:
             if doc is not None:
                 report.documents.append(doc)
             report.problems.extend(problems)
+
+    registry = root.parent / REGISTRY
+    if registry.is_file():
+        doc, problems = validate_document(registry, "registry")
+        if doc is not None:
+            report.documents.append(doc)
+        report.problems.extend(problems)
 
     if not report.documents and not report.problems:
         report.problems.append(Problem(root, "<dir>", "no canonical files found"))
