@@ -16,7 +16,10 @@ scrubbed environment; without srt nothing runs, because the reproduction
 command comes from the agent and every command executes code the agent wrote.
 
 Git commands the orchestrator runs on agent-written trees ignore repository
-hooks and external diff drivers, so nothing the agent wrote runs outside the
+hooks, fsmonitor and external diff drivers, and in the worktree they run with
+GIT_DIR, GIT_COMMON_DIR and GIT_WORK_TREE pinned to paths resolved from the
+repository root, never read from files the agent can write (the worktree's
+`.git`, its admin dir's `commondir`), so nothing the agent wrote runs outside the
 sandbox. Artifacts live in `.agent-team/artifacts/<run-id>/`; evidence holds a
 reference (path relative to the repository root, size, sha256), never the
 content, because checkpoint redaction truncates strings at 8 KiB.
@@ -34,7 +37,7 @@ from typing import Any
 
 from agent_team.adapters.claude.invoke import ENV_ALLOWLIST
 from agent_team.environments import AllocatorError, Environment, attach, create
-from agent_team.environments.worktree import BRANCH_PREFIX, read_meta
+from agent_team.environments.worktree import BRANCH_PREFIX, check_pointers, read_meta
 from agent_team.runs.redact import redact_text
 from agent_team.runs.store import STATE_DIR
 from agent_team.schemas.common import Autonomy
@@ -42,8 +45,14 @@ from agent_team.schemas.environment import EnvironmentSpec
 
 ARTIFACTS_DIR = "artifacts"
 
-# For git run by the orchestrator on a tree the agent wrote: no hooks, no signing prompt.
-SAFE_GIT: tuple[str, ...] = ("-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false")
+# For git run by the orchestrator on a tree the agent wrote: no hooks, no fsmonitor, no signing prompt.
+SAFE_GIT: tuple[str, ...] = (
+    "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "commit.gpgsign=false",
+)  # fmt: skip
+
+# Inherited git variables that would point git at another repository, index or config.
+_GIT_ENV_DROP = ("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CONFIG", "GIT_CONFIG_GLOBAL",
+                 "GIT_CONFIG_SYSTEM", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES")  # fmt: skip
 
 LEFTOVER_MESSAGE = "agent-team: changes the implementer left uncommitted"
 
@@ -55,11 +64,34 @@ class WorkspaceError(RuntimeError):
     """The worktree is not in a state the orchestrator can vouch for; the message says why."""
 
 
-def git(cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(["git", "-C", str(cwd), *SAFE_GIT, *args], capture_output=True, text=True, check=False)
+def git(
+    cwd: Path, *args: str, check: bool = True, env: Mapping[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        ["git", "-C", str(cwd), *SAFE_GIT, *args], capture_output=True, text=True, check=False,
+        env=None if env is None else dict(env),
+    )  # fmt: skip
     if check and result.returncode != 0:
         raise WorkspaceError(f"git {' '.join(args)} failed: {result.stderr.strip()[-500:]}")
     return result
+
+
+def pinned_env(env: Environment) -> dict[str, str]:
+    """Git's repository paths for the worktree, from the root's common .git; nothing read from the worktree."""
+    if env.git_dir is None:
+        raise WorkspaceError(f"the repository's git directory for {env.path} is unknown; refusing to run git there")
+    try:
+        admin = check_pointers(env.git_dir, env.path)
+    except AllocatorError as exc:
+        raise WorkspaceError(str(exc)) from exc
+    pinned = {k: v for k, v in os.environ.items() if k not in _GIT_ENV_DROP}
+    pinned.update(GIT_DIR=str(admin), GIT_COMMON_DIR=str(env.git_dir), GIT_WORK_TREE=str(env.path))
+    return pinned
+
+
+def worktree_git(env: Environment, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    """git in the agent's worktree, with its repository paths pinned (see `pinned_env`)."""
+    return git(env.path, *args, check=check, env=pinned_env(env))
 
 
 def short(sha: str | None) -> str:
@@ -117,30 +149,30 @@ class Settled:
 
 def settle(env: Environment) -> Settled:
     """Check the implementer stayed on the run branch above its base, and commit what it left uncommitted."""
-    branch = git(env.path, "symbolic-ref", "--quiet", "HEAD", check=False).stdout.strip()
+    branch = worktree_git(env, "symbolic-ref", "--quiet", "HEAD", check=False).stdout.strip()
     if branch != f"refs/heads/{env.meta.branch}":
         raise WorkspaceError(f"the worktree is not on {env.meta.branch} any more (HEAD is {branch or 'detached'})")
-    if git(env.path, "merge-base", "--is-ancestor", env.meta.base_commit, "HEAD", check=False).returncode != 0:
+    if worktree_git(env, "merge-base", "--is-ancestor", env.meta.base_commit, "HEAD", check=False).returncode != 0:
         raise WorkspaceError(f"the run branch no longer contains its base {short(env.meta.base_commit)}")
-    dirty = [line for line in git(env.path, "status", "--porcelain").stdout.splitlines() if line.strip()]
+    dirty = [line for line in worktree_git(env, "status", "--porcelain").stdout.splitlines() if line.strip()]
     if dirty:
-        git(env.path, "add", "--all")
-        git(env.path, "commit", "--quiet", "--no-verify", "-m", LEFTOVER_MESSAGE)
+        worktree_git(env, "add", "--all")
+        worktree_git(env, "commit", "--quiet", "--no-verify", "-m", LEFTOVER_MESSAGE)
     return Settled(head=head_of(env), committed=len(dirty))
 
 
 def head_of(env: Environment) -> str:
-    return git(env.path, "rev-parse", "HEAD").stdout.strip()
+    return worktree_git(env, "rev-parse", "HEAD").stdout.strip()
 
 
 def is_clean(env: Environment) -> bool:
-    return not git(env.path, "status", "--porcelain").stdout.strip()
+    return not worktree_git(env, "status", "--porcelain").stdout.strip()
 
 
 def restore(env: Environment, head: str) -> None:
     """Put the worktree back at `head` after commands that were run on a clean tree changed it."""
-    git(env.path, "reset", "--quiet", "--hard", head)
-    git(env.path, "clean", "--quiet", "-fd")
+    worktree_git(env, "reset", "--quiet", "--hard", head)
+    worktree_git(env, "clean", "--quiet", "-fd")
 
 
 def changed_files(root: Path, base: str, head: str) -> list[str]:
