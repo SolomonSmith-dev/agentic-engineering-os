@@ -358,6 +358,28 @@ def test_sweep_cleans_worktree_dir_without_metadata(repo: Path) -> None:
     assert "agent-team/run-1" not in branches(repo)
 
 
+def test_missing_metadata_never_drops_committed_work(repo: Path) -> None:
+    env = create(repo, "run-1", spec())
+    (env.path / "feature.py").write_text("def feature(): return 1\n", encoding="utf-8")
+    git(env.path, "add", "feature.py")
+    git(env.path, "commit", "-qm", "feature")
+    work = git(env.path, "rev-parse", "HEAD")
+    (state(repo) / "meta" / "run-1.json").unlink()
+
+    [result] = sweep(repo)
+    assert result.action == "disposed" and "branch agent-team/run-1 kept" in result.reason
+    assert not env.path.exists()
+    assert git(repo, "rev-parse", "agent-team/run-1") == work, "the commit stays reachable"
+
+
+def test_missing_metadata_still_deletes_a_branch_with_nothing_unique(repo: Path) -> None:
+    env = create(repo, "run-1", spec())
+    (state(repo) / "meta" / "run-1.json").unlink()
+    assert dispose(repo, "run-1") is None
+    assert not env.path.exists()
+    assert "agent-team/run-1" not in branches(repo)
+
+
 def test_env_sweep_command(repo: Path) -> None:
     result = runner.invoke(app, ["env", "sweep", "--repo", str(repo)])
     assert result.exit_code == 0, result.output

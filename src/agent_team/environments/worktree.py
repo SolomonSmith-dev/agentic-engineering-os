@@ -212,7 +212,14 @@ def _archive(root: Path, worktree: Path, run_id: str, base: str | None) -> Path 
     return target
 
 
-def _remove(root: Path, run_id: str, meta: WorktreeMeta | None) -> Path | None:
+def _unique_commits(root: Path, branch: str) -> bool:
+    """Whether `branch` has commits no other ref reaches; deleting it would lose them."""
+    out = _git(root, "rev-list", "--count", branch, "--not", f"--exclude=refs/heads/{branch}", "--all", check=False)
+    return out.returncode != 0 or out.stdout.strip() != "0"
+
+
+def _remove(root: Path, run_id: str, meta: WorktreeMeta | None) -> tuple[Path | None, str | None]:
+    """Remove the run's files. Returns (archive patch, branch kept because only it holds commits)."""
     dirs = _dirs(root)
     worktree = dirs["worktrees"] / run_id
     archive: Path | None = None
@@ -226,23 +233,34 @@ def _remove(root: Path, run_id: str, meta: WorktreeMeta | None) -> Path | None:
         removed = _git(root, "worktree", "remove", "--force", str(worktree), check=False)
         if removed.returncode != 0 and worktree.is_dir():
             shutil.rmtree(worktree)  # not a registered worktree; it is inside .agent-team/worktrees/
+    kept: str | None = None
     if branch is not None and branch.startswith(BRANCH_PREFIX):
-        _git(root, "branch", "-D", branch, check=False)
+        # Without metadata there is no base to diff against, so the patch cannot hold the
+        # branch's commits: keep the branch instead of dropping work nothing else references.
+        if meta is None and _unique_commits(root, branch):
+            kept = branch
+        else:
+            _git(root, "branch", "-D", branch, check=False)
     _git(root, "worktree", "prune", check=False)
     _meta_path(root, run_id).unlink(missing_ok=True)
     settings_path(dirs["state"], run_id).unlink(missing_ok=True)
     shutil.rmtree(dirs["tmp"] / run_id, ignore_errors=True)
-    return archive
+    return archive, kept
 
 
 def dispose(repo: Path, run_id: str) -> Path | None:
-    """Remove the run's worktree, branch, settings and temp dir. Returns the archive patch, if any."""
+    """Remove the run's worktree, branch, settings and temp dir. Returns the archive patch, if any.
+
+    A branch whose commits no other ref reaches is kept when the metadata (and so the base
+    the patch would be cut from) is missing.
+    """
     _check_run_id(run_id)
     root = repo_root(repo)
     meta = read_meta(root, run_id)
     if meta is None and not (_dirs(root)["worktrees"] / run_id).exists():
         raise AllocatorError(f"run {run_id} has no worktree")
-    return _remove(root, run_id, meta)
+    archive, _ = _remove(root, run_id, meta)
+    return archive
 
 
 def sweep(repo: Path) -> list[SweepResult]:
@@ -279,7 +297,9 @@ def sweep(repo: Path) -> list[SweepResult]:
             if reason is None:
                 results.append(SweepResult(run_id, "kept", "run not finished; resume needs it"))
                 continue
-            archive = _remove(root, run_id, meta)
+            archive, kept = _remove(root, run_id, meta)
+            if kept is not None:
+                reason += f"; branch {kept} kept: its commits are on no other ref"
             results.append(SweepResult(run_id, "disposed", reason, str(archive) if archive else None))
     finally:
         if store is not None:

@@ -44,18 +44,25 @@
       "Bash(git add *)",
       "Read(**/.env*)",
       "Edit(**/.env*)",
+      "Write(**/.env*)",
       "Read(~/.claude/**)",
       "Edit(~/.claude/**)",
+      "Write(~/.claude/**)",
       "Read(./.agent-team/**)",
       "Edit(./.agent-team/**)",
+      "Write(./.agent-team/**)",
       "Read(**/*.pem)",
       "Edit(**/*.pem)",
+      "Write(**/*.pem)",
       "Read(~/.ssh/**)",
       "Edit(~/.ssh/**)",
+      "Write(~/.ssh/**)",
       "Read(~/.aws/**)",
       "Edit(~/.aws/**)",
+      "Write(~/.aws/**)",
       "Read(~/.config/gcloud/**)",
-      "Edit(~/.config/gcloud/**)"
+      "Edit(~/.config/gcloud/**)",
+      "Write(~/.config/gcloud/**)"
     ]
   },
   "hooks": {
