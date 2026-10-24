@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import Field
 
 from agent_team.schemas.common import Autonomy, CanonicalModel, Capability, KebabName
+from agent_team.schemas.registry import PrivacyClass
 
 
 class RedactionRule(CanonicalModel):
@@ -23,3 +24,6 @@ class PolicySpec(CanonicalModel):
     redaction: list[RedactionRule] = Field(default_factory=list)
     required_gates: list[str] = Field(default_factory=list)
     default_autonomy: Autonomy = "A0"
+    allowed_privacy_classes: list[PrivacyClass] | None = Field(
+        default=None, description="Registry privacy classes a model may have; omit to allow every class."
+    )

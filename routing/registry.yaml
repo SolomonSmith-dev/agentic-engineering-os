@@ -1,0 +1,26 @@
+# Model class -> model resolution (docs/ARCHITECTURE.md sections 6 and 7).
+# Agents name a class; only this file names models. Ids are pinned snapshots.
+kind: registry
+name: default
+models:
+  claude-opus-5-5:
+    provider: anthropic
+    runtime: claude
+    privacy_class: vendor-cloud
+    capabilities: [tool_use, structured_output]
+    fallbacks: [claude-sonnet-5-5] # one step: review on Opus, Sonnet when Opus is unavailable
+  claude-sonnet-5-5:
+    provider: anthropic
+    runtime: claude
+    privacy_class: vendor-cloud
+    capabilities: [tool_use, structured_output]
+  claude-haiku-5-5:
+    provider: anthropic
+    runtime: claude
+    privacy_class: vendor-cloud
+    capabilities: [tool_use, structured_output]
+classes:
+  high-reasoning: claude-opus-5-5
+  independent: claude-opus-5-5 # a different class from the implementer's; Codex once there is a key (step 12)
+  strong-coding: claude-sonnet-5-5
+  cheap: claude-haiku-5-5

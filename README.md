@@ -39,7 +39,7 @@ agent-team trace <run-id> --calls
 `agent-team run` runs one canonical agent against a target repository: it records the run, takes the repository lock, allocates a worktree and sandbox, compiles the agent for Claude Code, runs `claude -p` headless, and writes every tool call, the cost and the outcome to the run record.
 
 ```bash
-agent-team run --agent independent-reviewer --model claude-opus-5-5 \
+agent-team run --agent independent-reviewer \
   --repo /path/to/target --canonical ~/Projects/agentic-engineering-os/canonical \
   --test-command "uv run pytest" --max-budget-usd 1.00 \
   --prompt-file review-request.md
@@ -50,7 +50,8 @@ agent-team run --agent independent-reviewer --model claude-opus-5-5 \
 - A `PreToolUse` hook blocks any tool call that names a protected path (`.env*`, `*.pem`, `~/.ssh`, `~/.aws`, the policy's own list), including through Bash. It fails closed.
 - With your Claude login the worker runs with `--setting-sources ""`, so hooks and settings checked into the target repository never load. With `ANTHROPIC_API_KEY` set (CI) it runs with `--bare`.
 - The worker gets a scrubbed environment and the prompt on stdin. An agent whose output has a schema (the reviewer's verdict) must return valid structured output, or the run fails.
-- `--model` is required until the model registry (build-order step 7) resolves model classes.
+- The model comes from `routing/registry.yaml` (found next to `--canonical`, or pass `--registry`): the agent's `model_class` maps to a pinned model id, and that model's `fallbacks` are emitted as `fallbackModel` in the compiled `settings.json`, so Claude Code switches to them when the model is overloaded or unavailable. The reviewer's class `independent` resolves to `claude-opus-5-5` with `claude-sonnet-5-5` as its one fallback. `--model <id>` overrides the class with another registry entry; an id that is not in the registry is refused.
+- A policy's `allowed_privacy_classes` pins which registry privacy classes (`vendor-cloud`, `vendor-zdr`, `local-only`) a model may have: a primary model outside it refuses the run, a fallback outside it is dropped. The run record notes the resolved model, its source and the fallback chain.
 
 After changing the adapter, the sandbox or the run path, run the opt-in live check on a machine with Claude Code, `srt` and a login. It calls a model (Haiku by default, capped at $0.10) and never runs in CI:
 

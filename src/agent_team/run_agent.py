@@ -2,7 +2,7 @@
 
 Record first, then lock, allocate, compile, invoke, record, finish:
 
-    start_run -> lock -> worktree + sandbox -> <agent's state> -> compile -> claude -p
+    start_run -> lock -> worktree + sandbox -> <agent's state> -> resolve model -> compile -> claude -p
               -> tool calls + cost -> finish (BLOCKED with the reason when it did not succeed)
 
 The orchestrator (step 10) replaces this with workflow-driven runs; until then
@@ -16,9 +16,10 @@ from pathlib import Path
 from typing import get_args
 
 from agent_team.adapters.claude.compile import compile_agent
-from agent_team.adapters.claude.invoke import build_invocation, check_version, execute, record
+from agent_team.adapters.claude.invoke import RUNTIME, build_invocation, check_version, execute, record
 from agent_team.canonical import Document, validate_tree
 from agent_team.environments import acquire, create, release
+from agent_team.routing import RegistryError, default_registry_path, load_registry, resolve_model
 from agent_team.runs.render import status_line
 from agent_team.runs.store import STATE_DIR, RunStore, repo_root
 from agent_team.schemas.adapter import OUTPUT_SCHEMAS, AdapterResult
@@ -68,7 +69,8 @@ def run_agent(
     agent_name: str,
     prompt: str,
     *,
-    model: str,
+    model: str | None = None,
+    registry_path: Path | None = None,
     claude: str,
     max_budget_usd: float,
     timeout_s: float,
@@ -77,13 +79,28 @@ def run_agent(
     environment_name: str = "default",
     echo: Callable[[str], None] = print,
 ) -> tuple[RunRecord, AdapterResult]:
-    """Run one agent against `repo` and return its run record and normalized result."""
+    """Run one agent against `repo` and return its run record and normalized result.
+
+    The model comes from the agent's model class in the registry; `model` overrides it
+    with another registry entry.
+    """
     canonical = load_canonical(canonical_dir)
     agent_doc = canonical.one("agent", agent_name)
     agent = agent_doc.spec
     skills = [(d.spec, d.body) for d in (canonical.one("skill", s) for s in agent.skills)]
     policy = canonical.one("policy", policy_name).spec
     env_spec = canonical.one("environment", environment_name).spec
+    try:
+        registry = load_registry(registry_path or default_registry_path(canonical_dir))
+        resolved = resolve_model(
+            registry,
+            agent.model_class,
+            runtime=RUNTIME,
+            allowed_privacy=policy.allowed_privacy_classes,
+            override=model,
+        )
+    except RegistryError as exc:
+        raise RunAgentError(str(exc)) from exc
     check_version(claude)
 
     root = repo_root(repo)
@@ -111,13 +128,14 @@ def run_agent(
                 skills,
                 policy,
                 ceiling=environment.autonomy_ceiling,
-                model=model,
+                model=resolved.model,
+                fallback_models=resolved.fallbacks,
                 out_dir=state_dir / "compiled" / run_id,
                 roots=[environment.path, root],
                 home=Path.home(),
                 test_commands=test_commands,
             )
-            notes = [environment.note(env_spec.name)]
+            notes = [environment.note(env_spec.name), resolved.note()]
             if replaced is not None:
                 notes.append(f"took over a stale lock from run {replaced.run_id} (pid {replaced.pid})")
             if compiled.permissions.dropped:
