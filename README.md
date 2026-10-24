@@ -22,6 +22,22 @@ agent-team doctor
 agent-team doctor --json
 ```
 
+## Init and configure a target repository
+
+`agent-team init <repo>` discovers a repository read-only and writes `.agent-team/proposal.yaml`, then prints a summary. It records the VCS host and remote (credentials stripped), the default branch, protected branches when the repository itself declares them (`.github/settings.yml`; otherwise `unknown`, because the hosting API needs auth and init makes no network calls), the CI system and its files, build, test, lint and type-check commands (from `Makefile`, `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`), instruction files (`CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`, `GEMINI.md`, `.cursorrules` and friends), MCP configs (server names only), secret handling (`.env` files, key files, vault and secret-store references) by path and kind only, devcontainer and CODEOWNERS. It refuses unless git ignores `.agent-team/`, writes nothing else, and keeps an existing proposal unless you pass `--force`.
+
+Each command gets a ✓ or ✗ from a dry-run check that runs nothing: ✓ means the tool the command needs was found (on PATH as an absolute path, or in the repository's `.venv/` or `node_modules/`) and the Makefile target or package script it names exists. It does not mean the command passes. `make -n`, `--help` and `--collect-only` are not used, because each can run code from the repository.
+
+```bash
+agent-team init /path/to/repo
+# review .agent-team/proposal.yaml; edit the ask (runtimes, privacy classes, autonomy ceiling up to A3, draft PRs)
+# and set ask.approved: true
+agent-team configure /path/to/repo --canonical ~/Projects/agentic-engineering-os/canonical --dry-run
+agent-team configure /path/to/repo --canonical ~/Projects/agentic-engineering-os/canonical
+```
+
+`agent-team configure <repo>` turns the approved proposal into `.agent-team/config.yaml` (verified commands by kind, which later steps use as the test, lint and type-check gates) and compiles runtime files: a marked block (`<!-- agent-team:begin -->` to `<!-- agent-team:end -->`) appended to `CLAUDE.md` and to `AGENTS.md` if it exists, and each canonical agent as `.claude/agents/<name>.md`. It prints a unified diff of every file it will write and asks before writing; `--yes` skips the question and `--dry-run` only shows the diff (it works before approval). Text outside the block is never changed; a re-run updates the block in place and writes nothing when nothing changed. A `CLAUDE.md` that imports `@AGENTS.md` is left alone. An agent file it did not write, a file with the same agent name under `.github/agents/`, and any path that is or sits under a symlink are left untouched and reported. It never writes `.claude/settings.json`. This is the only command that writes a target repository's `.claude/`.
+
 ## Run record and trace
 
 Every run is recorded in `.agent-team/runs.db` inside the target repository: one row per run (state, start and end time, cost so far, model class, worktree, outcome), one per state transition, and one per tool call (tool, redacted argument summary, result, duration, cost). The store refuses to open unless git already ignores `.agent-team/`, and it writes nothing outside that directory. Tool-call arguments are redacted and truncated before they are stored.

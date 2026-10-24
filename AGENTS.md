@@ -13,6 +13,7 @@ Python 3.12 via uv. `typer` CLI named `agent-team`, `pydantic` schemas, stdlib `
 - `src/agent_team/adapters/claude/`: Claude Code runtime adapter (step 6).
 - `src/agent_team/environments/`: worktree allocator and `srt` wrapper (step 5).
 - `src/agent_team/runs/`: SQLite run record and `trace` (step 4).
+- `src/agent_team/bootstrap/`: `init` discovery and `configure` (step 8).
 - `tests/`: pytest; every build-order step lands with its own test.
 - `docs/ARCHITECTURE.md`: the architecture document. Edit it in the repo, not in chat.
 
