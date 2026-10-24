@@ -33,3 +33,4 @@ packages = ["src/agent_team"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["srt: runs a command under the real srt sandbox (skips without srt unless AGENT_TEAM_REQUIRE_SRT=1)"]

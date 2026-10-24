@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  SRT_VERSION: "0.0.81"
+
 jobs:
   test:
     name: test (${{ matrix.os }})
@@ -27,7 +30,26 @@ jobs:
       - name: Install project and dev dependencies
         run: uv sync --locked --group dev
 
+      - name: Install sandbox runtime dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q bubblewrap socat ripgrep
+          # Ubuntu 24.04 blocks unprivileged user namespaces, which bubblewrap needs.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Install sandbox runtime dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ripgrep
+
+      - name: Install the sandbox runtime
+        run: |
+          npm install -g @anthropic-ai/sandbox-runtime@${{ env.SRT_VERSION }}
+          srt --version
+
       - name: Run tests
+        env:
+          AGENT_TEAM_REQUIRE_SRT: "1"
         run: uv run pytest -q
 
       - name: Prove the console script installs as a tool
@@ -35,9 +57,3 @@ jobs:
           uv tool install --force .
           agent-team --version | tee /tmp/version.txt
           /usr/bin/grep -qx "agent-team 0.0.1" /tmp/version.txt
-
-      - name: Prove the sandbox runtime installs (macOS only)
-        if: runner.os == 'macOS'
-        run: |
-          npm install -g @anthropic-ai/sandbox-runtime
-          srt --version

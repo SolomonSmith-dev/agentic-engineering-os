@@ -8,6 +8,7 @@ import typer
 from agent_team import __version__
 from agent_team.canonical import validate_tree
 from agent_team.doctor import build_report, render_table
+from agent_team.environments import AllocatorError, sweep
 from agent_team.runs import RunStore, RunStoreError, UnknownRunError, render_run_list, render_trace
 from agent_team.schemas import SCHEMAS, json_schema
 
@@ -102,6 +103,30 @@ def trace(
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(code=1) from exc
         typer.echo(render_trace(run, store.transitions(run_id), store.tool_calls(run_id), show_calls=calls))
+
+
+env_app = typer.Typer(help="Manage the per-run worktree environments under .agent-team/.", no_args_is_help=True)
+app.add_typer(env_app, name="env")
+
+
+@env_app.command("sweep")
+def env_sweep(
+    repo: Path = typer.Option(Path("."), "--repo", "-C", help="Target repository; defaults to the current directory."),
+) -> None:
+    """Dispose worktrees whose run ended or has no run record; keep in-progress runs for resume."""
+    try:
+        results = sweep(repo)
+    except (RunStoreError, AllocatorError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    if not results:
+        typer.echo("no worktrees")
+        return
+    for result in results:
+        line = f"{result.action:<8} {result.run_id}  {result.reason}"
+        if result.archive:
+            line += f"; work saved to {result.archive}"
+        typer.echo(line)
 
 
 schema_app = typer.Typer(help="Inspect and export the canonical JSON Schemas.", no_args_is_help=True)
