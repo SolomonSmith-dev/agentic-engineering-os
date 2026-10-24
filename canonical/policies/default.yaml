@@ -2,7 +2,7 @@ kind: policy
 name: default
 autonomy_ceiling:
   independent-reviewer: A2
-protected_paths: [".env", ".env.*", "~/.claude/**", ".agent-team/**"]
+protected_paths: [".env*", "~/.claude/**", ".agent-team/**"]
 denied_capabilities: [git.push.main, fs.write.home]
 redaction:
   - name: api-keys

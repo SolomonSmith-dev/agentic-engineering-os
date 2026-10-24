@@ -28,21 +28,26 @@ CAPABILITY_RULES: dict[str, tuple[Autonomy, tuple[str, ...]]] = {
 # Capabilities the orchestrator exercises itself, outside the worker: the agent never gets them.
 ORCHESTRATOR_CAPABILITIES: tuple[str, ...] = ("git.write.branch", "github.pr.create", "github.pr.review")
 
-# Denied in every compiled session, whatever the agent asks for.
+# Commands denied in every compiled session, whatever the agent asks for. Each compiles to an
+# exact rule and a prefix rule, because `Bash(git push *)` alone may not cover a bare `git push`.
+DENIED_COMMANDS: tuple[str, ...] = (
+    "git push",
+    "git branch -d",
+    "git branch -D",
+    "git reset --hard",
+    "git config",
+)
+
 ALWAYS_DENY: tuple[str, ...] = (
     "WebFetch",
     "WebSearch",
-    "Bash(git push *)",
-    "Bash(git branch -d *)",
-    "Bash(git branch -D *)",
-    "Bash(git reset --hard *)",
-    "Bash(git config *)",
+    *(rule for cmd in DENIED_COMMANDS for rule in (f"Bash({cmd})", f"Bash({cmd} *)")),
 )
 
 # Rules that a denied capability pattern adds to the deny list (defense in depth on top of dontAsk).
 DENY_RULES: dict[str, tuple[str, ...]] = {
     "fs.write.workspace": ("Edit", "Write", "NotebookEdit"),
-    "git.commit": ("Bash(git commit *)", "Bash(git add *)"),
+    "git.commit": ("Bash(git commit)", "Bash(git commit *)", "Bash(git add *)"),
     "shell.execute.workspace": (),
 }
 

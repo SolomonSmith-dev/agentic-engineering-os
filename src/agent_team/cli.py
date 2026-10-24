@@ -123,7 +123,11 @@ def run(
     if (prompt is None) == (prompt_file is None):
         typer.echo("error: give the prompt as an argument or with --prompt-file, not both", err=True)
         raise typer.Exit(code=2)
-    text = prompt if prompt is not None else prompt_file.read_text(encoding="utf-8")  # type: ignore[union-attr]
+    try:
+        text = prompt if prompt is not None else prompt_file.read_text(encoding="utf-8")  # type: ignore[union-attr]
+    except (OSError, UnicodeDecodeError) as exc:
+        typer.echo(f"error: cannot read --prompt-file {prompt_file}: {exc.strerror or exc}", err=True)
+        raise typer.Exit(code=2) from exc
     claude = _which("claude")
     if claude is None:
         typer.echo("error: claude is not on PATH; run 'agent-team doctor'", err=True)

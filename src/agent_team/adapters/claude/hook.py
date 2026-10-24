@@ -21,6 +21,8 @@ FILE_TOOLS = ("Read", "Edit", "Write", "MultiEdit", "NotebookEdit")
 SEARCH_TOOLS = ("Glob", "Grep")
 # Path-like words in a shell command: everything between shell punctuation and whitespace.
 _WORDS = re.compile(r"[^\s\"'`;|&<>()=$,]+")
+# $HOME and ${HOME} become ~ before splitting, so `cat "$HOME/.ssh/id"` matches `~/.ssh/**`.
+_HOME_VAR = re.compile(r"\$\{HOME\}|\$HOME\b")
 
 
 def _candidates(tool: str, tool_input: dict[str, Any]) -> list[str]:
@@ -29,7 +31,7 @@ def _candidates(tool: str, tool_input: dict[str, Any]) -> list[str]:
     if tool in SEARCH_TOOLS:
         return [str(tool_input.get(k)) for k in ("path", "pattern", "glob") if tool_input.get(k)]
     if tool == "Bash":
-        return _WORDS.findall(str(tool_input.get("command", "")))
+        return _WORDS.findall(_HOME_VAR.sub("~", str(tool_input.get("command", ""))))
     return []
 
 

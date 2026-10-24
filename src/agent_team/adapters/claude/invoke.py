@@ -15,7 +15,9 @@ Output is read as stream-json so every tool call reaches the run record.
 """
 
 import json
+import os
 import re
+import signal
 import subprocess
 import threading
 import time
@@ -166,7 +168,7 @@ def _status(result: dict[str, Any] | None, exit_code: int, timed_out: bool) -> A
         return "error"
     subtype = str(result.get("subtype", ""))
     if subtype == "success" and not result.get("is_error"):
-        return "succeeded"
+        return "succeeded" if exit_code == 0 else "failed"
     if "max_turns" in subtype:
         return "max_turns"
     if "budget" in subtype:
@@ -262,12 +264,16 @@ def execute(
             stdout=subprocess.PIPE,
             stderr=err,
             text=True,
+            start_new_session=True,  # its own process group, so a timeout reaches every child
         )
         timed_out = threading.Event()
 
         def _kill() -> None:
             timed_out.set()
-            proc.kill()
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
         timer = threading.Timer(timeout_s, _kill)
         timer.start()

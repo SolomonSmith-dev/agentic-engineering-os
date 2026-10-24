@@ -84,6 +84,7 @@ def test_reviewer_capabilities_at_a2() -> None:
     assert perms.tools == ["Bash", "Glob", "Grep", "Read"]
     assert "Edit" in perms.deny and "Write" in perms.deny, "fs.write.* is denied for the reviewer"
     assert "Bash(git push *)" in perms.deny
+    assert {"Bash(git push)", "Bash(git reset --hard)", "Bash(git config)"} <= set(perms.deny), "bare forms too"
 
 
 def test_capabilities_above_the_ceiling_are_dropped_and_reported() -> None:
@@ -161,7 +162,7 @@ def test_compile_inlines_skills_and_schema_for_the_reviewer(tmp_path: Path) -> N
     assert json.loads(compiled.schema_json.read_text()) == ReviewVerdict.model_json_schema()
     settings = json.loads(compiled.settings_json.read_text())
     assert settings["attribution"] == {"commit": "", "pr": ""}
-    assert "Read(**/.env)" in settings["permissions"]["deny"]
+    assert "Read(**/.env*)" in settings["permissions"]["deny"]
     assert "Read(~/.ssh/**)" in settings["permissions"]["deny"]
 
 
@@ -173,7 +174,7 @@ def hook_policy(tmp_path: Path) -> dict:
     repo = tmp_path / "repo"
     worktree = repo / ".agent-team" / "worktrees" / "run-1"
     return {
-        "protected_paths": [".env", ".env.*", "*.pem", "~/.ssh/**", ".agent-team/**"],
+        "protected_paths": [".env*", "*.pem", "~/.ssh/**", ".agent-team/**"],
         "roots": [str(worktree), str(repo)],
         "home": str(tmp_path / "home"),
     }
@@ -185,11 +186,15 @@ def hook_policy(tmp_path: Path) -> dict:
         ("Read", {"file_path": "app.py"}, False),
         ("Read", {"file_path": ".env"}, True),
         ("Read", {"file_path": "config/.env.local"}, True),
+        ("Read", {"file_path": ".envrc"}, True),
         ("Edit", {"file_path": "certs/server.pem"}, True),
         ("Bash", {"command": "uv run pytest -q"}, False),
         ("Bash", {"command": "cat .env"}, True),
         ("Bash", {"command": "grep TOKEN < ./.env"}, True),
         ("Bash", {"command": "cat ~/.ssh/id_ed25519"}, True),
+        ("Bash", {"command": 'cat "$HOME/.ssh/id_ed25519"'}, True),
+        ("Bash", {"command": "cat ${HOME}/.ssh/config"}, True),
+        ("Bash", {"command": "echo $HOMEBREW_PREFIX"}, False),
         ("Bash", {"command": "sqlite3 ../../runs.db .dump"}, True),
         ("Bash", {"command": "git diff HEAD~1"}, False),
         ("Grep", {"pattern": "TOKEN", "path": ".env"}, True),
@@ -219,8 +224,9 @@ def test_hook_entry_point_exit_codes(tmp_path: Path, hook_policy: dict) -> None:
     ok = _hook(policy_file, json.dumps({"tool_name": "Read", "tool_input": {"file_path": "app.py"}}))
     assert ok.returncode == 0
     blocked = _hook(policy_file, json.dumps({"tool_name": "Bash", "tool_input": {"command": "cat .env"}}))
-    assert blocked.returncode == 2 and "protected by '.env'" in blocked.stderr
+    assert blocked.returncode == 2
     assert _hook(policy_file, "not json").returncode == 2, "fails closed on bad input"
+    assert "protected by '.env*'" in blocked.stderr
     assert _hook(tmp_path / "missing.json", "{}").returncode == 2, "fails closed without a policy"
 
 
@@ -342,6 +348,24 @@ def test_missing_or_invalid_structured_output_fails_the_run() -> None:
     assert result.status == "failed" and "validation" in result.structured_output_error
 
 
+def test_success_event_with_a_nonzero_exit_is_a_failed_run() -> None:
+    parser = _parse({"type": "result", "subtype": "success", "is_error": False})
+    assert normalize(parser, exit_code=1, timed_out=False, stderr="", output_model=None).status == "failed"
+
+
+def test_timeout_kills_the_whole_worker_process_group(tmp_path: Path) -> None:
+    import time
+
+    from agent_team.adapters.claude.invoke import Invocation, execute
+
+    # The child keeps stdout open after the parent dies; only a group kill ends the read loop.
+    inv = Invocation(argv=["sh", "-c", "sleep 60 & sleep 60"], env=dict(os.environ), mode="login")
+    start = time.monotonic()
+    result, _ = execute(inv, prompt="", cwd=tmp_path, stderr_path=tmp_path / "err", timeout_s=1)
+    assert result.status == "timeout"
+    assert time.monotonic() - start < 15
+
+
 def test_no_result_event_is_an_error_and_stderr_is_redacted() -> None:
     result = normalize(StreamParser(), exit_code=1, timed_out=False, stderr="auth failed sk-ant-api03-STDERRCANARY0000000", output_model=None)
     assert result.status == "error"
@@ -449,7 +473,7 @@ def test_run_reviewer_end_to_end(repo: Path, fake_path) -> None:
     assert "Review the diff" not in " ".join(seen["argv"])
     assert seen["cwd"] == run.worktree_path
     assert "GH_TOKEN" not in seen["env"] and "CLAUDE_CODE_SESSION_ID" not in seen["env"]
-    assert seen["hook_exit"] == 2 and "protected by '.env'" in seen["hook_stderr"], "the hook runs and blocks"
+    assert seen["hook_exit"] == 2 and "protected by '.env*'" in seen["hook_stderr"], "the hook runs and blocks"
     assert not (repo / ".agent-team" / "lock").exists(), "the lock is released"
     assert (repo / ".agent-team" / "compiled" / run.run_id / "agents" / "independent-reviewer.md").is_file()
     assert not (repo / ".claude").exists(), "nothing is written into the target repo's .claude/"
@@ -480,6 +504,14 @@ def test_run_while_locked_records_a_blocked_run(repo: Path, fake_path) -> None:
     assert result.exit_code == 2 and "holds" in result.output
     run, transitions, _ = only_run(repo)
     assert run.outcome == "blocked" and transitions[-1].to_state == "BLOCKED"
+
+
+def test_run_reports_an_unreadable_prompt_file(repo: Path, fake_path, tmp_path: Path) -> None:
+    fake_path()
+    result = runner.invoke(app, ["run", "--agent", "independent-reviewer", "--model", MODEL, "--repo", str(repo),
+                                 "--prompt-file", str(tmp_path / "missing.md")])  # fmt: skip
+    assert result.exit_code == 2 and "cannot read --prompt-file" in result.output
+    assert RunStore.open(repo, create=False) is None
 
 
 def test_run_needs_exactly_one_prompt_source(repo: Path, fake_path) -> None:

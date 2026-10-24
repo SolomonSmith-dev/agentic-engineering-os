@@ -1,7 +1,6 @@
 {
   "protected_paths": [
-    ".env",
-    ".env.*",
+    ".env*",
     "~/.claude/**",
     ".agent-team/**",
     "*.pem",
