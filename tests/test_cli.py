@@ -11,7 +11,7 @@ runner = CliRunner()
 def test_version_flag_prints_pinned_version() -> None:
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
-    assert result.output.strip() == "agent-team 0.0.1"
+    assert result.output.strip() == "agent-team 0.1.0"
 
 
 def test_installed_console_script_runs() -> None:
@@ -23,7 +23,7 @@ def test_installed_console_script_runs() -> None:
         check=False,
     )
     assert proc.returncode == 0
-    assert proc.stdout.strip() == "agent-team 0.0.1"
+    assert proc.stdout.strip() == "agent-team 0.1.0"
 
 
 def test_no_args_shows_help() -> None:

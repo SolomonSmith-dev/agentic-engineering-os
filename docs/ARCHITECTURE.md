@@ -328,7 +328,8 @@ Four of the five decisions are now locked; the time box is the only one still op
 
 Assumptions added:
 
-- `--bare` needs `ANTHROPIC_API_KEY`, so local runs use `claude -p --settings <compiled> --strict-mcp-config` without `--bare`; CI uses an API key with `--bare`. Revisit when `--bare` becomes the `-p` default.
+- `--bare` needs `ANTHROPIC_API_KEY` (it reads neither the subscription login nor `CLAUDE_CODE_OAUTH_TOKEN`), so local runs use `claude -p --setting-sources "" --settings <compiled> --strict-mcp-config` without `--bare`; CI uses an API key with `--bare`. `--setting-sources ""` is what keeps a target repository's own `.claude/settings.json` hooks out of the worker (verified 2026-10-24 on Claude Code 2.1.310); our `--settings` hook still loads. Revisit when `--bare` becomes the `-p` default.
+- Compiled agents land in `.agent-team/compiled/<run-id>/` and reach Claude Code through `--agents`, `--agent` and `--settings`; only step 8 `configure` writes a target repository's `.claude/`. Skills are inlined into the agent prompt instead of preloaded through the `skills` field.
 - Model IDs in the registry are the pinned snapshots `claude-sonnet-5-5` and `claude-opus-5-5`; a `fallbackModel` chain of one step (Opus to Sonnet for review) is emitted.
 - Lint and type-check commands come from `init` discovery; if none are detected, the gate is skipped and the run record says so.
 - The reviewer's requirement ids are the acceptance-criteria ids the requirements-analyst or the plan assigns; a bug-fix plan with no explicit criteria gets one synthetic criterion: the reproduction command passes.

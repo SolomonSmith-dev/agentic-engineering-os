@@ -56,4 +56,4 @@ jobs:
         run: |
           uv tool install --force .
           agent-team --version | tee /tmp/version.txt
-          /usr/bin/grep -qx "agent-team 0.0.1" /tmp/version.txt
+          /usr/bin/grep -qx "agent-team 0.1.0" /tmp/version.txt
