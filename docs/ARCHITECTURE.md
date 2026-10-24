@@ -2,31 +2,27 @@
 
 Oct 22, 2026 · @Solomon
 
-Recommendation: build a thin, provider-neutral control layer (canonical YAML specs + adapter compiler + worktree isolation + evidence-gated review) on top of Claude Code as the first runtime, with Codex and Copilot adapters as the proof that the core is not Claude-shaped. Phase 0 is read-only; nothing on your machine changes until you approve the decision gate at the end.
+Recommendation: build a thin, provider-neutral control layer (canonical YAML specs + adapter compiler + worktree isolation + evidence-gated review) on top of Claude Code as the first runtime, with Codex and Copilot adapters as the proof that the core is not Claude-shaped. Phase 0 is read-only; nothing on the maintainer's machine changes until the decision gate at the end is approved.
 
 ## 1. Current state assessment
 
-Your Oct 21 simplification already did most of Phase 0's retiring. What survives is a Claude-Code-centred setup with one gateway (LiteLLM in ARDA) and one observability stack (Langfuse) that the new system can reuse as adapters rather than rebuild. Your Mac was not reachable for a live scan this session; this table is built from your Oct 21 decisions and the Aug 25 self-audit, and `agent-team doctor` will replace it with a verified inventory.
+The maintainer's existing setup was inventoried privately; machine names, home-network details and employer specifics are kept out of this public repo. What carries into the design:
 
-| Component | Verdict | Why |
+| Existing piece | Verdict | Why |
 | --- | --- | --- |
 | Claude Code (CLI, subagents, skills, hooks, settings.json) | KEEP | First runtime adapter target; richest observed feature set |
-| CLAUDE.md per owned repo + global CLAUDE.md, CLAUDE.local.md for courtrules | KEEP | Becomes the Claude adapter's compile target for repository memory |
-| Plugins at user scope (superpowers, security-guidance, commit-commands, playwright) | INTEGRATE | Compare each against a canonical skill; keep whichever wins in evals |
-| Custom skills (repo-audit, project-scaffolder, handoff, interview-me, new-chat-prompt) | INTEGRATE | repo-audit is the seed of `agent-team inspect`; others stay personal |
+| CLAUDE.md files per owned repo | KEEP | Becomes the Claude adapter's compile target for repository memory |
+| User-scope plugins and custom skills | INTEGRATE | Compare each against a canonical skill; keep whichever wins in evals |
 | MCP servers (Context7, GitHub, Serena, Playwright) | INTEGRATE | Register as tools in the capability registry, not as the architecture |
-| LiteLLM (ARDA choke point) | INTEGRATE | Candidate model gateway for Phase 6; self-hosted, provider-neutral |
-| Langfuse (ARDA) | INTEGRATE | Candidate trace sink for Phase 13 |
-| MetaMCP gateway (ARDA) | UNKNOWN | Overlaps the tool gateway; evaluate against a plain capability registry |
-| Redis / BullMQ / PM2 agent stack on the Mini | REPLACE | Useful pattern, wrong default; orchestration state lives in files + SQLite until concurrency proves a need |
-| Ollama (qwen3:8b on Air; removed Oct 21) | INTEGRATE | Local-model adapter for privacy class `local-only`; not installed by default |
-| OpenClaw, Codex CLI, Gemini CLI, bun | RETIRE (done Oct 21) | Codex and Gemini return only as adapters compiled from canonical specs, not as daily tools |
-| Earendil / Sauron / Morgoth / Balrog agents | RETIRE as roles | Named personas conflict with "agents are capabilities"; keep any working code as tool adapters |
-| Tailscale + Mini + Pi | KEEP | Remote-host environment target; nothing to change |
-| Docker (daemon off, kept for courtrules) | KEEP | Container environment target; optional, never mandatory |
+| A self-hosted model gateway (LiteLLM) and trace sink (Langfuse) in ARDA | INTEGRATE | Candidate gateway and trace sink for later phases; provider-neutral |
+| An existing Redis / BullMQ / PM2 agent stack | REPLACE | Useful pattern, wrong default; orchestration state lives in files + SQLite until concurrency proves a need |
+| Local models (Ollama) | INTEGRATE | Local-model adapter for privacy class `local-only`; not installed by default |
+| Retired CLIs and named-persona agents | RETIRE | Codex and Gemini return only as adapters; named personas conflict with "agents are capabilities" |
+| A second home machine | KEEP | Later remote-host environment target |
+| Docker | KEEP | Container environment target; optional, never mandatory |
 | ARDA (FastAPI/Redis/Docker multi-agent) | INTEGRATE | Portfolio anchor; becomes the first eval repository, not the orchestrator |
-| CourtRules repo | KEEP as test bed | Real team repo with rules you do not own; the honest onboarding eval |
-| Obsidian vault, life-tracker, personal-tech-ops | OUT OF SCOPE | Personal systems; user memory only, never organization memory |
+| An employer team repo | KEEP as test bed | Real team repo with rules the maintainer does not own; the honest onboarding eval, used only with its owner's permission |
+| Personal notes and tracking systems | OUT OF SCOPE | Personal systems; user memory only, never organization memory |
 
 ## 2. Industry architecture findings
 
@@ -236,7 +232,7 @@ Each step is one PR, reversible, with its own test. Python 3.12 via uv, `typer` 
 12. Codex adapter for the reviewer only: compile to `.codex/agents/*.toml`, invoke `codex exec --json`.
 13. Eval harness: ten Harbor-shaped tasks, mini-swe-agent baseline, comparison script printing the section 13 metrics.
 14. Docs: README, ARCHITECTURE, BOOTSTRAP, SECURITY, THREAT\_MODEL first; the remaining spec docs generated from the JSON Schemas.
-15. Dogfood on CourtRules with Saurabh's permission, at A3, bug-fix only. This is the real day-one rehearsal.
+15. Dogfood on an employer team repo with its owner's permission, at A3, bug-fix only. This is the real day-one rehearsal.
 
 Gate after step 13: proceed to Copilot adapter, feature workflow and parallel implementers only if the eval shows the team beating the baseline on at least two of completion rate, regressions and human interventions without more than 2x cost.
 
@@ -264,7 +260,7 @@ The claim to prove: the orchestrated team produces more merged-quality PRs per d
 
 | Element | Choice |
 | --- | --- |
-| Task set | 30 tasks across ARDA, one personal repo, and (with permission) CourtRules: 10 locate-bug, 10 fix-bug, 5 small feature, 5 repair-failing-test; each a Harbor-shaped YAML with repo, ref, instruction, hidden verifier |
+| Task set | 30 tasks across ARDA, one personal repo, and (with permission) the employer test-bed repo: 10 locate-bug, 10 fix-bug, 5 small feature, 5 repair-failing-test; each a Harbor-shaped YAML with repo, ref, instruction, hidden verifier |
 | Baseline A | mini-swe-agent on the strongest Claude coding model, one shot, same budget cap |
 | Baseline B | a single Claude Code `-p` session with the same CLAUDE.md and skills, no team |
 | Treatment | `agent-team run` with the MVP bug-fix workflow (archaeologist, implementer, independent reviewer on Codex) |
@@ -285,8 +281,8 @@ Everything else in this document is discoverable or defaulted. These five are yo
 | --- | --- | --- |
 | Repo home and name | `agentic-engineering-os` under your GitHub, public from day one; or private until the eval passes | Public; it is portfolio material and the SCaLE talk's successor |
 | Reviewer vendor | Codex (requires an OpenAI key or ChatGPT plan you currently do not pay for); or Claude on a different model class with a "no shared context" rule | Claude-different-class for MVP, Codex once there is a key; the adapter is built either way |
-| CourtRules as dogfood | Ask Saurabh now for A3 draft-PR permission on a small issue; or dogfood only on ARDA until the eval passes | Ask after step 13 passes, with the three-line Slack shape |
-| Where orchestration runs | Your Air only; or also the Mini as a remote-host environment | Air only; the Mini is a later `environments/remote-host.yaml` |
+| Employer repo as dogfood | Ask the repo's owner now for A3 draft-PR permission on a small issue; or dogfood only on ARDA until the eval passes | Ask after step 13 passes |
+| Where orchestration runs | The maintainer's laptop only; or also a second machine as a remote-host environment | Laptop only; the second machine is a later `environments/remote-host.yaml` |
 | Time box | Build order steps 1 to 13 before January (about 4 weeks of focused evenings); or steps 1 to 6 only this semester and the rest after graduation | Steps 1 to 6 this semester, 7 to 13 over winter break, dogfood in January |
 
 On your approval, implementation starts at build-order step 1 in a new repo, each step as its own reviewed PR, nothing touching your existing Claude config until step 8's `configure` runs on a repo you point it at.
@@ -316,12 +312,12 @@ Four of the five decisions are now locked; the time box is the only one still op
 | Repo > CI | GitHub Actions, hosted ubuntu + macos, Python 3.12; no self-hosted runner on a public repo |
 | Repo > install | `uv tool install git+https://github.com/SolomonSmith-dev/agentic-engineering-os@<tag>` |
 | Repo > versioning | 0.x semver; tag at each gate: 0.1 after step 6, 0.2 after step 13, 1.0 after dogfood |
-| Dogfood > timing | CourtRules after the step 13 eval passes |
-| Dogfood > ask | None required; Saurabh has no objection. Own defaults still hold: a branch you own, nothing committed outside it, `.agent-team/` gitignored |
+| Dogfood > timing | The employer test-bed repo after the step 13 eval passes |
+| Dogfood > ask | Permission settled with the repo's owner. Own defaults still hold: a branch you own, nothing committed outside it, `.agent-team/` gitignored |
 | Dogfood > fallback | ARDA plus one personal repo, recorded as the onboarding eval |
-| Runs > host | Air only, foreground; Mini later as a remote-host environment for test runs over SSH, never the orchestrator |
+| Runs > host | The maintainer's laptop only, foreground; a second machine later as a remote-host environment for test runs over SSH, never the orchestrator |
 | Runs > state | `.agent-team/` inside the target repo, gitignored: run record SQLite, worktrees, lock file |
-| Runs > auth | Claude Max login through the `claude` CLI |
+| Runs > auth | Claude subscription login through the `claude` CLI |
 | Runs > concurrency | One run per repo; lock file holds the PID; a dead PID is taken over and logged |
 | Runs > interrupt | Checkpoint after every state; `agent-team resume <run>` re-enters there; worktree kept; no auto-restart |
 | Runs > status | One terminal line per state transition with elapsed time and cost so far; full log in the run record |

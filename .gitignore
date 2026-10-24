@@ -17,3 +17,6 @@ build/
 .playwright-mcp/
 graphify-out/
 .DS_Store
+
+# Maintainer-only notes (machine inventory, employer and dogfood details), never committed
+docs/private/
