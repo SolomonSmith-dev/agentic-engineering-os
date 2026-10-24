@@ -232,7 +232,9 @@ def test_inspect_writes_memory_and_verifies_commands_in_srt(repo: Path, fake_cla
     assert list(by_command) == ["make test", "make lint", "make typecheck", "python app.py"]
     test, lint, typecheck, extra = by_command.values()
     assert (test.status, test.exit_code, test.detected_by) == ("passed", 0, "init")
-    assert test.output_tail == "tests ran with [REDACTED]", "command output is redacted"
+    # macOS's /usr/bin/make is an xcrun shim that may first complain it cannot write its cache outside srt.
+    assert (test.output_tail or "").endswith("tests ran with [REDACTED]"), "command output is redacted"
+    assert OUTPUT_TOKEN not in (test.output_tail or "")
     assert (lint.status, lint.exit_code, lint.reason) == ("failed", 2, "exit 2"), "make's own exit code"
     assert "lint failed" in (lint.output_tail or "")
     assert typecheck.status == "failed" and typecheck.exit_code == 2
