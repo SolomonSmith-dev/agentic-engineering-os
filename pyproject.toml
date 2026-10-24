@@ -33,4 +33,7 @@ packages = ["src/agent_team"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["srt: runs a command under the real srt sandbox (skips without srt unless AGENT_TEAM_REQUIRE_SRT=1)"]
+markers = [
+    "srt: runs a command under the real srt sandbox (skips without srt unless AGENT_TEAM_REQUIRE_SRT=1)",
+    "live: calls a real model through claude and srt; opt-in with AGENT_TEAM_LIVE=1, never in CI",
+]
