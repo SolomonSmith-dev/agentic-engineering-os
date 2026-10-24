@@ -297,6 +297,7 @@ def test_sandboxed_invocation_is_wrapped_in_srt(tmp_path: Path) -> None:
     assert inv.argv[6:8] == ["/bin/claude", "-p"]
     assert "TMPDIR" not in inv.env
     assert inv.env["CLAUDE_CODE_TMPDIR"] == str(tmp_path / "t"), "Claude Code's own temp files stay writable"
+    assert inv.env["CLAUDE_CODE_TOOL_MEMORY_LIMIT"] == "none", "no per-tool cgroup under srt's read-only /sys"
 
 
 # --- stream parsing -------------------------------------------------------------

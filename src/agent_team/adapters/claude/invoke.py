@@ -43,6 +43,8 @@ ENV_ALLOWLIST: tuple[str, ...] = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "LC
 
 STDERR_TAIL_CHARS = 2000
 
+TOOL_MEMORY_LIMIT_ENV = "CLAUDE_CODE_TOOL_MEMORY_LIMIT"
+
 AuthMode = Literal["login", "bare"]
 
 
@@ -110,6 +112,11 @@ def build_invocation(
     # Claude Code keeps its own Bash working files under $CLAUDE_CODE_TMPDIR/claude-<uid>/,
     # /tmp by default on macOS, which srt does not let the worker write. Use the run's temp dir.
     env["CLAUDE_CODE_TMPDIR"] = str(sandbox.tmp_dir)
+    if sandbox.sandboxed:
+        # On Linux, Claude Code may run each Bash call in a memory cgroup under its own; srt mounts
+        # /sys read-only, so every call fails with EROFS on clone3 (verified on 2.1.310, srt 0.0.81).
+        # "none" turns the per-tool cgroup off; srt is the boundary inside the sandbox.
+        env[TOOL_MEMORY_LIMIT_ENV] = "none"
     if mode == "bare":
         env["ANTHROPIC_API_KEY"] = base_env["ANTHROPIC_API_KEY"]
     return Invocation(argv=sandbox.wrap(argv), env=sandbox.env(env), mode=mode)
