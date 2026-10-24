@@ -28,7 +28,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError
 
-from agent_team.adapters.claude.compile import PERMISSION_MODE, CompiledAgent
+from agent_team.adapters.claude.compile import PERMISSION_MODE, STRUCTURED_OUTPUT_TOOL, CompiledAgent
 from agent_team.environments.sandbox import Sandbox
 from agent_team.runs.redact import redact_text
 from agent_team.runs.store import RunStore
@@ -156,6 +156,9 @@ class StreamParser:
         for block in content:
             if not isinstance(block, dict):
                 continue
+            # StructuredOutput is how the answer comes back, not a step the agent chose: not recorded.
+            if block.get("name") == STRUCTURED_OUTPUT_TOOL:
+                continue
             if kind == "assistant" and block.get("type") == "tool_use" and block.get("id"):
                 self.calls[block["id"]] = ToolCall(
                     block["id"], str(block.get("name", "?")), block.get("input"), now, wall
@@ -179,6 +182,8 @@ def _status(result: dict[str, Any] | None, exit_code: int, timed_out: bool) -> A
         return "max_turns"
     if "budget" in subtype:
         return "budget_exceeded"
+    if "structured_output" in subtype:
+        return "failed"
     return "failed" if subtype == "success" else "error"
 
 

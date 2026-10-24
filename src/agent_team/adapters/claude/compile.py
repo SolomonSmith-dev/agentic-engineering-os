@@ -35,6 +35,10 @@ DEFAULT_PROTECTED: tuple[str, ...] = (".env*", "*.pem", "~/.ssh/**", "~/.aws/**"
 
 PERMISSION_MODE = "dontAsk"
 
+# Claude Code adds this tool when --json-schema is set and the agent returns its answer through
+# it; an agent `tools` allowlist that leaves it out hides the schema from the model.
+STRUCTURED_OUTPUT_TOOL = "StructuredOutput"
+
 
 @dataclass(frozen=True)
 class CompiledAgent:
@@ -65,12 +69,25 @@ def path_rule(tool: str, pattern: str) -> str:
     return f"{tool}(./{pattern})"
 
 
-def build_prompt(body: str, agent: AgentSpec, skills: list[tuple[SkillSpec, str]], has_schema: bool) -> str:
+def build_prompt(
+    body: str, agent: AgentSpec, skills: list[tuple[SkillSpec, str]], permissions: Permissions, has_schema: bool
+) -> str:
     parts = [body.strip(), "## Definition of done", *(f"- {item}" for item in agent.definition_of_done)]
     for spec, skill_body in skills:
         parts.append(f"## Skill: {spec.name}\n\n{spec.description}\n\n{skill_body.strip()}")
+    allowed = "\n".join(f"- `{rule}`" for rule in permissions.allow) or "- none"
+    parts.append(
+        "## Environment\n\n"
+        "Your working directory is the repository checkout for this run. Run every command from it as written: "
+        "no `cd`, no `git -C`, no absolute paths to the checkout. Any call that no rule below allows is denied "
+        "without a prompt; do not look for another way to do a denied action.\n\n"
+        f"Allowed:\n{allowed}"
+    )
     if has_schema:
-        parts.append("## Output\n\nEnd with structured output that matches the JSON Schema you are given.")
+        parts.append(
+            f"## Output\n\nReturn your answer by calling the `{STRUCTURED_OUTPUT_TOOL}` tool with an object that "
+            "matches its schema. Do not write the JSON into your reply instead."
+        )
     return "\n\n".join(parts) + "\n"
 
 
@@ -131,8 +148,8 @@ def compile_agent(
     disallowed = [r for r in permissions.deny if "(" not in r]
     definition: dict[str, Any] = {
         "description": agent.purpose,
-        "prompt": build_prompt(body, agent, skills, schema is not None),
-        "tools": permissions.tools,
+        "prompt": build_prompt(body, agent, skills, permissions, schema is not None),
+        "tools": [*permissions.tools, STRUCTURED_OUTPUT_TOOL] if schema is not None else permissions.tools,
         "disallowedTools": disallowed,
         "model": model,
         "permissionMode": PERMISSION_MODE,

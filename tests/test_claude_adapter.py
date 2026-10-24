@@ -158,6 +158,8 @@ def test_compile_inlines_skills_and_schema_for_the_reviewer(tmp_path: Path) -> N
     assert "## Skill: requirement-tracing" in definition["prompt"]
     assert definition["permissionMode"] == "dontAsk" and definition["model"] == MODEL
     assert all("(" not in t for t in definition["disallowedTools"]), "scoped rules would remove whole tools"
+    assert "StructuredOutput" in definition["tools"], "without it the model never sees the schema"
+    assert "no `git -C`" in definition["prompt"] and "- `Bash(git diff *)`" in definition["prompt"]
     assert compiled.schema_json is not None
     assert json.loads(compiled.schema_json.read_text()) == ReviewVerdict.model_json_schema()
     settings = json.loads(compiled.settings_json.read_text())
@@ -296,6 +298,7 @@ def _lines(*events: dict) -> list[str]:
 TOOL_USE = {"type": "assistant", "message": {"content": [
     {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "git diff"}},
     {"type": "tool_use", "id": "t2", "name": "Read", "input": {"file_path": ".env"}},
+    {"type": "tool_use", "id": "t3", "name": "StructuredOutput", "input": {"verdict": "changes"}},
 ]}}  # fmt: skip
 TOOL_RESULT = {"type": "user", "message": {"content": [
     {"type": "tool_result", "tool_use_id": "t1", "is_error": False, "content": "diff"},
@@ -323,7 +326,7 @@ def test_parser_pairs_tool_calls_and_reads_the_result() -> None:
                     "structured_output": VERDICT}  # fmt: skip
     parser = _parse({"type": "system", "subtype": "init"}, TOOL_USE, TOOL_RESULT, result_event)
     assert parser.unparsed == 3, "non-object events and bad JSON are skipped, never fatal"
-    assert [c.name for c in parser.calls.values()] == ["Bash", "Read"]
+    assert [c.name for c in parser.calls.values()] == ["Bash", "Read"], "StructuredOutput is not a step"
     result = normalize(parser, exit_code=0, timed_out=False, stderr="", output_model=ReviewVerdict)
     assert result.status == "succeeded" and result.cost_usd == 0.42 and result.num_turns == 3
     assert result.tool_calls == 2 and result.permission_denials == ["Read"]
@@ -333,7 +336,8 @@ def test_parser_pairs_tool_calls_and_reads_the_result() -> None:
 @pytest.mark.parametrize(
     ("subtype", "is_error", "status"),
     [("error_max_budget_usd", True, "budget_exceeded"), ("error_max_turns", True, "max_turns"),
-     ("error_during_execution", True, "error"), ("success", True, "failed")],
+     ("error_during_execution", True, "error"), ("success", True, "failed"),
+     ("error_max_structured_output_retries", True, "failed")],
 )  # fmt: skip
 def test_end_reasons_map_to_statuses(subtype: str, is_error: bool, status: str) -> None:
     parser = _parse({"type": "result", "subtype": subtype, "is_error": is_error, "total_cost_usd": 1.01})

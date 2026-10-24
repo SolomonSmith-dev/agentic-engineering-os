@@ -16,9 +16,10 @@ CAPABILITY_RULES: dict[str, tuple[Autonomy, tuple[str, ...]]] = {
     "fs.read": ("A0", ("Read", "Glob", "Grep")),
     "git.read": (
         "A0",
-        ("Bash(git status *)", "Bash(git diff *)", "Bash(git log *)", "Bash(git show *)", "Bash(git blame *)"),
+        tuple(r for cmd in ("git status", "git diff", "git log", "git show") for r in (f"Bash({cmd})", f"Bash({cmd} *)"))
+        + ("Bash(git blame *)",),
     ),
-    "shell.read": ("A0", ("Bash(ls *)", "Bash(pwd)", "Bash(wc *)", "Bash(head *)", "Bash(tail *)")),
+    "shell.read": ("A0", ("Bash(ls)", "Bash(ls *)", "Bash(pwd)", "Bash(wc *)", "Bash(head *)", "Bash(tail *)")),
     "fs.write.workspace": ("A2", ("Edit", "Write")),
     "shell.execute.workspace": ("A2", ("Bash",)),
     "test.run": ("A2", ()),  # rules come from the repo's detected test commands

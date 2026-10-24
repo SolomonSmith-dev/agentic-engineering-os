@@ -6,6 +6,7 @@ tools:
 - Glob
 - Grep
 - Read
+- StructuredOutput
 disallowedTools:
 - WebFetch
 - WebSearch
@@ -69,6 +70,32 @@ For each acceptance criterion id:
 2. Find the test that fails without those hunks and passes with them. None found: finding, severity major.
 3. Record the triple (criterion id, hunks, test) in the review output so the verdict is checkable by a human.
 
+## Environment
+
+Your working directory is the repository checkout for this run. Run every command from it as written: no `cd`, no `git -C`, no absolute paths to the checkout. Any call that no rule below allows is denied without a prompt; do not look for another way to do a denied action.
+
+Allowed:
+- `Read`
+- `Glob`
+- `Grep`
+- `Bash(git status)`
+- `Bash(git status *)`
+- `Bash(git diff)`
+- `Bash(git diff *)`
+- `Bash(git log)`
+- `Bash(git log *)`
+- `Bash(git show)`
+- `Bash(git show *)`
+- `Bash(git blame *)`
+- `Bash(ls)`
+- `Bash(ls *)`
+- `Bash(pwd)`
+- `Bash(wc *)`
+- `Bash(head *)`
+- `Bash(tail *)`
+- `Bash(uv run pytest)`
+- `Bash(uv run pytest *)`
+
 ## Output
 
-End with structured output that matches the JSON Schema you are given.
+Return your answer by calling the `StructuredOutput` tool with an object that matches its schema. Do not write the JSON into your reply instead.
