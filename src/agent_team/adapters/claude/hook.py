@@ -129,11 +129,19 @@ def check(event: dict[str, Any], policy: dict[str, Any]) -> str | None:
         for candidate in candidates:
             if not inside(candidate, Path(write_root), home):
                 return f"blocked by agent-team policy: {tool} writes {candidate!r}, outside the run's worktree"
-            if ".git" in Path(candidate).parts:
+            if ".git" in Path(candidate).parts or ".git" in resolved_parts(candidate, Path(write_root), home):
                 # The worktree's .git file names its gitdir; repointed, the orchestrator's own git
                 # (outside every sandbox) would read a config the agent wrote.
                 return f"blocked by agent-team policy: {tool} writes {candidate!r}, inside git's metadata"
     return None
+
+
+def resolved_parts(candidate: str, root: Path, home: Path) -> tuple[str, ...]:
+    """The parts of `candidate` below `root` once symlinks are followed, so a link to `.git` is caught too."""
+    path = _expand(candidate, home)
+    target = Path(os.path.realpath(path if path.is_absolute() else root / path))
+    real_root = Path(os.path.realpath(root))
+    return target.relative_to(real_root).parts if target.is_relative_to(real_root) else ()
 
 
 def inside(candidate: str, root: Path, home: Path) -> bool:

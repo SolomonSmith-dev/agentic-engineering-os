@@ -476,6 +476,9 @@ def write_policy(tmp_path: Path) -> dict:
     worktree = tmp_path / "repo" / ".agent-team" / "worktrees" / "run-1"
     (worktree / "src").mkdir(parents=True)
     (worktree / "escape").symlink_to(tmp_path)
+    (worktree / ".git").write_text("gitdir: /elsewhere\n", encoding="utf-8")
+    (worktree / "g").symlink_to(".git")  # a committed symlink into git's metadata
+    (worktree / "meta").symlink_to(".git", target_is_directory=True)
     return {"protected_paths": [".agent-team/**"], "roots": [str(worktree), str(tmp_path / "repo")],
             "home": str(tmp_path / "home"), "write_root": str(worktree)}  # fmt: skip
 
@@ -492,6 +495,8 @@ def write_policy(tmp_path: Path) -> dict:
         ("Read", "/etc/hostname", False),
         ("Write", ".git", True),
         ("Edit", "sub/.git/config", True),
+        ("Write", "g", True),
+        ("Edit", "meta/config", True),
     ],
 )
 def test_hook_keeps_file_writes_inside_the_worktree(write_policy: dict, tool: str, path: str, blocked: bool) -> None:
