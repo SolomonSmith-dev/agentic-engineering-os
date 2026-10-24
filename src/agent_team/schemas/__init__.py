@@ -15,6 +15,7 @@ from agent_team.schemas.environment import EnvironmentSpec, NetworkPolicy, PortP
 from agent_team.schemas.policy import PolicySpec, RedactionRule
 from agent_team.schemas.registry import ModelEntry, RegistrySpec
 from agent_team.schemas.runs import (
+    Checkpoint,
     RunOutcome,
     RunRecord,
     RunState,
@@ -24,7 +25,7 @@ from agent_team.schemas.runs import (
 )
 from agent_team.schemas.skill import SkillSpec
 from agent_team.schemas.tool import Implementation, ToolSpec
-from agent_team.schemas.workflow import Transition, WorkflowSpec
+from agent_team.schemas.workflow import Node, Transition, WorkflowSpec
 
 SCHEMAS: dict[str, type[BaseModel]] = {
     "agent": AgentSpec,
@@ -52,12 +53,14 @@ __all__ = [
     "SCHEMAS",
     "AgentSpec",
     "Capabilities",
+    "Checkpoint",
     "DetectedCommand",
     "DoctorReport",
     "EnvironmentSpec",
     "Implementation",
     "ModelEntry",
     "NetworkPolicy",
+    "Node",
     "PolicySpec",
     "PortPolicy",
     "Proposal",
