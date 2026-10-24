@@ -18,14 +18,13 @@ tail. Every command, its exit code and its duration go to the run record as an
 """
 
 import os
+import selectors
 import signal
 import subprocess
-import tempfile
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
 
 from agent_team.adapters.claude.compile import DEFAULT_PROTECTED
 from agent_team.adapters.claude.invoke import ENV_ALLOWLIST
@@ -43,6 +42,7 @@ DEFAULT_COMMAND_TIMEOUT_S = 600.0
 # Output kept per command. A wider window is redacted first, so a token cut by the tail is never kept in part.
 OUTPUT_TAIL_CHARS = 1000
 REDACT_WINDOW_CHARS = 8000
+OUTPUT_WINDOW_BYTES = REDACT_WINDOW_CHARS * 4  # worst-case UTF-8 bytes we ever need to keep
 
 STATUS_TO_RESULT: dict[VerificationStatus, ToolResultStatus] = {
     "passed": "ok",
@@ -78,13 +78,22 @@ def protect(sandbox: Sandbox, policy: PolicySpec, *, root: Path, worktree: Path,
     extend_settings(sandbox, deny_read=srt_deny_read(protected, [worktree, root], home, keep))
 
 
-def _tail(handle: BinaryIO, redaction: Sequence[str]) -> str | None:
-    """The redacted end of a command's output, read back from the file it wrote; None when it printed nothing."""
-    size = handle.seek(0, os.SEEK_END)
-    if size == 0:
+def _append_rolling(window: bytearray, chunk: bytes) -> None:
+    """Keep only the newest OUTPUT_WINDOW_BYTES bytes."""
+    if len(chunk) >= OUTPUT_WINDOW_BYTES:
+        window[:] = chunk[-OUTPUT_WINDOW_BYTES:]
+        return
+    overflow = len(window) + len(chunk) - OUTPUT_WINDOW_BYTES
+    if overflow > 0:
+        del window[:overflow]
+    window.extend(chunk)
+
+
+def _tail(window: bytes, redaction: Sequence[str]) -> str | None:
+    """The redacted end of a command's output window; None when it printed nothing."""
+    if not window:
         return None
-    handle.seek(max(0, size - REDACT_WINDOW_CHARS * 4))  # up to 4 bytes per character
-    text = handle.read().decode("utf-8", errors="replace")[-REDACT_WINDOW_CHARS:]
+    text = window.decode("utf-8", errors="replace")[-REDACT_WINDOW_CHARS:]
     return redact_text(text, redaction)[-OUTPUT_TAIL_CHARS:].strip() or None
 
 
@@ -99,8 +108,7 @@ def run_command(
 ) -> CommandVerification:
     """Run one command through srt in `cwd`. Callers check `sandbox_refusal` first.
 
-    Output goes to an unnamed temp file outside the sandbox and is read back through the
-    same descriptor, so the command cannot point agent-team at another file to read.
+    Output is consumed through a pipe and only a rolling tail window is kept in memory.
     """
     if not sandbox.sandboxed:
         raise ValueError("refusing to run a repository command outside srt")
@@ -112,30 +120,47 @@ def run_command(
             "detected_by": "init", "dry_run": candidate.dry_run}  # fmt: skip
     start = time.monotonic()
     timed_out = False
-    with tempfile.TemporaryFile() as out:
+    window = bytearray()
+    try:
+        proc = subprocess.Popen(
+            argv,
+            cwd=cwd,
+            env=sandbox.env(env),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,  # its own process group, so a timeout reaches every child
+        )
+    except OSError as exc:
+        return CommandVerification(**base, status="failed", reason=f"could not start: {exc.strerror or exc}")
+    assert proc.stdout is not None
+    deadline = start + timeout_s
+    with selectors.DefaultSelector() as selector:
+        selector.register(proc.stdout, selectors.EVENT_READ)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            events = selector.select(timeout=remaining)
+            if not events:
+                timed_out = True
+                break
+            chunk = proc.stdout.read1(64 * 1024)
+            if not chunk:  # pipe closed
+                break
+            _append_rolling(window, chunk)
+    if timed_out:
         try:
-            proc = subprocess.Popen(
-                argv,
-                cwd=cwd,
-                env=sandbox.env(env),
-                stdin=subprocess.DEVNULL,
-                stdout=out,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,  # its own process group, so a timeout reaches every child
-            )
-        except OSError as exc:
-            return CommandVerification(**base, status="failed", reason=f"could not start: {exc.strerror or exc}")
-        try:
-            exit_code = proc.wait(timeout=timeout_s)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            exit_code = proc.wait()
-        duration_ms = int((time.monotonic() - start) * 1000)
-        tail = _tail(out, redaction)  # only the redacted tail is kept
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    exit_code = proc.wait()
+    if proc.stdout is not None:
+        for chunk in iter(lambda: proc.stdout.read(64 * 1024), b""):
+            _append_rolling(window, chunk)
+    duration_ms = int((time.monotonic() - start) * 1000)
+    tail = _tail(window, redaction)  # only the redacted tail is kept
     if timed_out:
         return CommandVerification(
             **base, status="timeout", duration_ms=duration_ms, reason=f"killed after {timeout_s:g}s", output_tail=tail

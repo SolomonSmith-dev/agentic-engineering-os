@@ -303,6 +303,36 @@ def test_command_timeout_kills_the_command(tmp_path: Path, fake_claude, srt: str
     assert [c.result_status for c in calls if c.tool_name == "inspect.verify"][0] == "timeout"
 
 
+def test_large_command_output_keeps_only_the_redacted_tail(tmp_path: Path) -> None:
+    class _PassthroughSandbox:
+        def __init__(self, tmp_dir: Path):
+            self.tmp_dir = tmp_dir
+
+        @property
+        def sandboxed(self) -> bool:
+            return True
+
+        def wrap(self, argv: list[str]) -> list[str]:
+            return argv
+
+        def env(self, base: dict[str, str]) -> dict[str, str]:
+            return base
+
+    result = run_command(
+        Candidate("test", f"yes {OUTPUT_TOKEN} | head -c 200000000; exit 7", "Makefile", True),
+        sandbox=_PassthroughSandbox(tmp_path),
+        cwd=tmp_path,
+        timeout_s=30,
+        base_env={},
+        redaction=(OUTPUT_TOKEN,),
+    )
+    assert (result.status, result.exit_code, result.reason) == ("failed", 7, "exit 7")
+    assert result.output_tail is not None
+    assert "[REDACTED]" in result.output_tail
+    assert OUTPUT_TOKEN not in result.output_tail
+    assert len(result.output_tail) <= verify_module.OUTPUT_TAIL_CHARS
+
+
 def test_without_srt_commands_are_never_run(repo: Path, fake_claude, no_srt) -> None:
     fake_claude()
     result = inspect(repo)
