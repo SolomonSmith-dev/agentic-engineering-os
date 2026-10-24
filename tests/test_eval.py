@@ -12,6 +12,7 @@ they skip when it is absent, and fail instead when AGENT_TEAM_REQUIRE_SRT=1 (CI)
 
 import json
 import os
+import re
 import shutil
 import sys
 from collections import Counter
@@ -464,6 +465,18 @@ def test_the_estimate_uses_recorded_costs_only() -> None:
 # --- end to end with the fakes ------------------------------------------------------------------------
 
 
+def _runs_in(cell: CellResult) -> list[tuple]:
+    """Every run row in a cell's run records, for a failing assertion's message."""
+    import sqlite3
+
+    rows: list[tuple] = []
+    for db in sorted(Path(cell.work_dir or ".").rglob("runs.db")):
+        with sqlite3.connect(db) as conn:
+            rows += [(str(db.relative_to(cell.work_dir)), *r) for r in conn.execute(
+                "SELECT run_id, workflow, cost_usd, outcome, started_at FROM runs ORDER BY started_at")]
+    return rows
+
+
 def read_cells(world: World) -> dict[str, CellResult]:
     return {c.arm: c for c in world.store().cells()}
 
@@ -493,7 +506,7 @@ def test_all_three_arms_run_capped_verified_and_never_see_the_verifier(
     a, b, t = cells["baseline-a"], cells["baseline-b"], cells["treatment"]
     assert a.cost_usd == 0.2 and a.tokens == {"prompt_tokens": 300, "completion_tokens": 40} and a.retries == 0
     assert b.cost_usd == pytest.approx(0.1) and b.tokens == {"input_tokens": 100, "output_tokens": 20, "cache_read_input_tokens": 5}
-    assert t.cost_usd == pytest.approx(0.3), "implementer twice and the reviewer"
+    assert t.cost_usd == pytest.approx(0.3), ("implementer twice and the reviewer", t.run_ids, t.notes, _runs_in(t))
     assert t.tokens == {"input_tokens": 300, "output_tokens": 60, "cache_read_input_tokens": 15} and t.retries == 0
     assert a.model == "claude-opus-5-5 (through litellm)" and b.model == "claude-opus-5-5"
     assert any("committed 1 path(s)" in n for n in b.notes), "the single session left its fix uncommitted"
@@ -743,7 +756,8 @@ def test_an_environment_can_deny_reading_extra_paths(tmp_path: Path) -> None:
 
 def test_the_eval_group_shows_help_without_a_subcommand() -> None:
     result = runner.invoke(app, ["eval"])
-    assert result.exit_code == 0 and "run" in result.output and "report" in result.output and "--last" in result.output
+    text = re.sub(r"\x1b\[[0-9;]*m", "", result.output)  # rich forces colour on CI (GITHUB_ACTIONS)
+    assert result.exit_code == 0 and "run" in text and "report" in text and "--last" in text
 
 
 def test_mini_swe_agent_is_never_a_default_dependency() -> None:
