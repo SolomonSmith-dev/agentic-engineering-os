@@ -102,6 +102,12 @@ After changing the adapter, the sandbox or the run path, run the opt-in live che
 AGENT_TEAM_LIVE=1 uv run pytest -q -m live
 ```
 
+On Linux, Claude Code may run each Bash call in a memory cgroup of its own, which srt's read-only `/sys` refuses (`EROFS ... clone3 /sys/fs/cgroup/...`), leaving the agent without a shell. agent-team sets `CLAUDE_CODE_TOOL_MEMORY_LIMIT=none` for every sandboxed worker. Set it yourself when you run Claude Code under srt by hand:
+
+```bash
+srt --settings srt.json -- env CLAUDE_CODE_TOOL_MEMORY_LIMIT=none claude -p "..."
+```
+
 ## Run a workflow
 
 `agent-team run --workflow bug-fix` runs a canonical workflow through the orchestrator instead of a single agent. The orchestrator builds a DAG from `canonical/workflows/bug-fix.yaml` (a linear chain for now) and walks it: each node names its state, who works in it (a canonical agent or an in-process step), the evidence it must leave, and the gate that must pass to move on.
