@@ -1,9 +1,9 @@
 """`agent-team run --agent`: one canonical agent, one run, end to end (build-order step 6).
 
-Record first, then lock, allocate, compile, invoke, record, finish:
+Resolve the model, record, then lock, allocate, compile, invoke, record, finish:
 
-    start_run -> lock -> worktree + sandbox -> <agent's state> -> compile -> claude -p
-              -> tool calls + cost -> finish (BLOCKED with the reason when it did not succeed)
+    registry -> start_run -> lock -> worktree + sandbox -> <agent's state> -> compile -> claude -p
+                          -> tool calls + cost -> finish (BLOCKED with the reason when it did not succeed)
 
 The orchestrator (step 10) replaces this with workflow-driven runs; until then
 this is the one path that runs an agent, and it records everything it does.
@@ -19,10 +19,12 @@ from agent_team.adapters.claude.compile import compile_agent
 from agent_team.adapters.claude.invoke import build_invocation, check_version, execute, record
 from agent_team.canonical import Document, validate_tree
 from agent_team.environments import acquire, create, release
+from agent_team.routing import ResolvedModel, RoutingError, resolve_model
 from agent_team.runs.render import status_line
 from agent_team.runs.store import STATE_DIR, RunStore, repo_root
 from agent_team.schemas.adapter import OUTPUT_SCHEMAS, AdapterResult
 from agent_team.schemas.common import AUTONOMY_ORDER, Autonomy
+from agent_team.schemas.registry import RegistrySpec
 from agent_team.schemas.runs import RunRecord, RunState
 
 
@@ -39,6 +41,12 @@ class Canonical:
             if doc.kind == kind and doc.spec is not None and doc.spec.name == name:
                 return doc
         raise RunAgentError(f"no canonical {kind} named {name!r}")
+
+    def registry(self) -> RegistrySpec:
+        for doc in self.docs:
+            if doc.kind == "registry" and doc.spec is not None:
+                return doc.spec
+        raise RunAgentError("no model registry: the canonical tree needs routing/registry.yaml")
 
 
 def load_canonical(path: Path) -> Canonical:
@@ -62,13 +70,20 @@ def agent_state(triggers: list[str]) -> RunState | None:
     return None
 
 
+def pick_model(canonical: Canonical, model_class: str, override: str | None) -> ResolvedModel:
+    try:
+        return resolve_model(model_class, canonical.registry(), override)
+    except RoutingError as exc:
+        raise RunAgentError(str(exc)) from exc
+
+
 def run_agent(
     repo: Path,
     canonical_dir: Path,
     agent_name: str,
     prompt: str,
     *,
-    model: str,
+    model: str | None = None,
     claude: str,
     max_budget_usd: float,
     timeout_s: float,
@@ -77,13 +92,17 @@ def run_agent(
     environment_name: str = "default",
     echo: Callable[[str], None] = print,
 ) -> tuple[RunRecord, AdapterResult]:
-    """Run one agent against `repo` and return its run record and normalized result."""
+    """Run one agent against `repo` and return its run record and normalized result.
+
+    The model comes from the registry by the agent's model class; `model` overrides it.
+    """
     canonical = load_canonical(canonical_dir)
     agent_doc = canonical.one("agent", agent_name)
     agent = agent_doc.spec
     skills = [(d.spec, d.body) for d in (canonical.one("skill", s) for s in agent.skills)]
     policy = canonical.one("policy", policy_name).spec
     env_spec = canonical.one("environment", environment_name).spec
+    resolved = pick_model(canonical, agent.model_class, model)
     check_version(claude)
 
     root = repo_root(repo)
@@ -111,13 +130,14 @@ def run_agent(
                 skills,
                 policy,
                 ceiling=environment.autonomy_ceiling,
-                model=model,
+                model=resolved.model,
+                fallbacks=resolved.fallbacks,
                 out_dir=state_dir / "compiled" / run_id,
                 roots=[environment.path, root],
                 home=Path.home(),
                 test_commands=test_commands,
             )
-            notes = [environment.note(env_spec.name)]
+            notes = [environment.note(env_spec.name), resolved.note()]
             if replaced is not None:
                 notes.append(f"took over a stale lock from run {replaced.run_id} (pid {replaced.pid})")
             if compiled.permissions.dropped:

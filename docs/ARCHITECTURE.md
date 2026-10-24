@@ -127,7 +127,7 @@ escalate_when: [unresolved_security_finding, requirement_unmapped]
 | `canonical/workflows/*.yaml` | state list, DAG rules, gates, DoD per workflow | orchestrator runtime only; no runtime has an equivalent |
 | `canonical/tools/*.yaml` | capability name → implementation (CLI, API, MCP server, local service), credential handle | permission allow/deny rules per runtime; MCP config; gateway routes |
 | `canonical/policies/*.yaml` | autonomy ceiling per agent, protected paths, redaction rules, required gates | Claude hooks (`PreToolUse` exit 2), Codex `[permissions]`, Copilot repository rules, orchestrator checks |
-| `routing/registry.yaml` | model entries (provider, capabilities, cost, privacy class, fallbacks) and class → model resolution | per-agent `model` fields; LiteLLM config |
+| `canonical/routing/registry.yaml` | model entries (provider, capabilities, cost, privacy class, fallbacks) and class → model resolution | per-agent `model` fields; LiteLLM config |
 | `canonical/environments/*.yaml` | isolation tier (worktree, srt; later docker, devcontainer, remote host, CI), network allowlist, port block per worktree | orchestrator allocator; `srt` settings per run |
 | `evals/tasks/*.yaml` | Harbor-shaped task: repo, ref, instruction, verifier command | Harbor dataset; mini-swe-agent baseline run |
 
@@ -144,12 +144,12 @@ An adapter does three things: declare capabilities, compile canonical files into
 | mcp | true | true | true (YAML) | false | false |
 | hooks | true (33 events) | false | false | false | false |
 | sandbox | bash-only native; full via srt | `sandbox_mode` | ephemeral cloud, 59 min | whatever the environment gives | same |
-| headless | `-p --bare --output-format json` | `codex exec --json` | issue assignment → PR | stdin/stdout contract | OpenAI-compatible API |
+| headless | `-p --output-format stream-json --settings <compiled>`; `--setting-sources ""` with a login, `--bare` with `ANTHROPIC_API_KEY` | `codex exec --json` | issue assignment → PR | stdin/stdout contract | OpenAI-compatible API |
 | remote\_execution | cloud sessions | cloud (unverified) | always | no | no |
 | per\_agent\_model | true | true | true | n/a | fixed |
 | cost\_report | `total_cost_usd` (estimate) | OTel events | premium requests | none | tokens only |
 
-Degradation rules: a workflow asks for capabilities by name; when the runtime lacks one the orchestrator substitutes (no hooks → policy enforced in orchestrator before dispatch; no parallel agents → serialize the DAG; no sandbox → cap autonomy at A1). Nothing is faked: the run record states which capabilities were unavailable. The independent-reviewer role is always compiled to a different vendor from the implementer when the organization permits two.
+Degradation rules: a workflow asks for capabilities by name; when the runtime lacks one the orchestrator substitutes (no hooks → policy enforced in orchestrator before dispatch; no parallel agents → serialize the DAG; no sandbox → worktree only, autonomy capped at A2). Nothing is faked: the run record states which capabilities were unavailable. The independent-reviewer role is always compiled to a different vendor from the implementer when the organization permits two.
 
 Compile backend: trial [rulesync](https://github.com/dyoshikawa/rulesync) for agents, skills, MCP and rules first; write our own emitter only for the things it does not cover (workflows, policies, environments, evals). Rejection criteria for rulesync are your standing ones: it may not send content to a third party, self-update from an unpinned source, or edit config outside the paths we hand it.
 
@@ -174,7 +174,7 @@ Corporate deployment concerns and how the design answers them:
 
 | Concern | Answer |
 | --- | --- |
-| "Which models see our code?" | `routing/registry.yaml` has a `privacy_class`; org policy pins allowed classes; `doctor` prints the resulting allowlist |
+| "Which models see our code?" | `canonical/routing/registry.yaml` has a `privacy_class`; org policy pins allowed classes; `doctor` prints the resulting allowlist |
 | "Where does data go?" | Only to runtimes the org has licensed; telemetry is local SQLite by default, OTel export opt-in, prompts redacted |
 | "Can it push to main or deploy?" | Not above A3 without a signed policy file; A5 is a stub that refuses |
 | "Does it bypass our controls?" | Managed settings and repository rules sit above ours by construction; we never ship `bypassPermissions` or `dangerously-skip-permissions` |
@@ -205,7 +205,7 @@ The smallest version worth building is one command, one workflow, one runtime, t
 - `agent-team doctor`, `init`, `configure`, `inspect`, `run`, `trace`: six commands, no `ask`, `plan`, `ship`, `costs`, `eval` subcommands yet (eval runs as a script).
 - One workflow: bug-fix (DISCOVERY → PLAN → IMPLEMENTATION → TEST → CODE REVIEW → PR). Feature and the others are YAML added later, not code.
 - Four agents compiled: orchestrator (runs in-process, not as a model call where logic suffices), archaeologist, implementer, independent-reviewer. The reviewer runs on Codex when `codex` is installed, otherwise on a different Claude model class.
-- One runtime adapter: Claude Code via `claude -p --bare --output-format json --settings <compiled>`. Codex adapter only as far as the reviewer needs it.
+- One runtime adapter: Claude Code via `claude -p --output-format stream-json --settings <compiled>`, with `--setting-sources ""` under a subscription login and `--bare` only when `ANTHROPIC_API_KEY` is set. Codex adapter only as far as the reviewer needs it.
 - Environment: git worktree per task, wrapped in `srt` on macOS and Linux; falls back to worktree-only with autonomy capped at A2 when `srt` is absent.
 - Policy engine: deny-list plus autonomy ceiling, compiled to Claude `permissions` and a `PreToolUse` hook.
 - Run record: SQLite file in `.agent-team/runs.db`, one row per run, one per tool call. `trace` reads it.
@@ -223,7 +223,7 @@ Each step is one PR, reversible, with its own test. Python 3.12 via uv, `typer` 
 3. `doctor`: host and runtime detection, auth state (present / absent, never values), egress test, managed-settings detection. Snapshot test against fixture outputs.
 4. Run record (SQLite) and `trace`. Written before any agent runs so nothing is ever unrecorded.
 5. Environment allocator: worktree create / dispose / stale sweep, `.worktreeinclude` handling, `srt` wrapper with network allowlist, port offset per worktree. Tests use a throwaway repo.
-6. Claude adapter: compile one canonical agent to `.claude/agents/`, compile policy to permissions + hook, invoke `-p --bare`, parse JSON, normalize result and cost into the run record.
+6. Claude adapter: compile one canonical agent to `.agent-team/compiled/<run-id>/` (passed by flag, never written to the target's `.claude/`), compile policy to permissions + hook, invoke `-p` (`--setting-sources ""` with a login, `--bare` with an API key), parse stream-json, normalize result and cost into the run record.
 7. Model registry YAML and class resolution; `fallbackModel` chain emitted into compiled settings.
 8. `init` read-only discovery and `proposal.yaml`; `configure` with diff-before-write and marked blocks in existing instruction files.
 9. `inspect`: archaeologist agent at A0 writing repository memory; verification of detected commands by dry run.
@@ -303,7 +303,7 @@ Four of the five decisions are now locked; the time box is the only one still op
 | Reviewer > severities | blocker, major, minor; blocker and major block; minor becomes PR follow-ups |
 | Reviewer > scope | Requirement-to-hunk tracing; every criterion maps to code and a test |
 | Reviewer > budget | `--max-budget-usd 1.00` per review call; abort is recorded with reason |
-| Reviewer > checklist | `canonical/skills/review-checklist/SKILL.md`, preloaded via the agent's `skills` field |
+| Reviewer > checklist | `canonical/skills/review-checklist/SKILL.md`, named in the agent's `skills` field and inlined into its compiled prompt |
 | Repo > visibility | Public from the first commit |
 | Repo > names | Repo `agentic-engineering-os`, CLI `agent-team` |
 | Repo > license | Apache-2.0 |
@@ -327,6 +327,8 @@ Assumptions added:
 - `--bare` needs `ANTHROPIC_API_KEY` (it reads neither the subscription login nor `CLAUDE_CODE_OAUTH_TOKEN`), so local runs use `claude -p --setting-sources "" --settings <compiled> --strict-mcp-config` without `--bare`; CI uses an API key with `--bare`. `--setting-sources ""` is what keeps a target repository's own `.claude/settings.json` hooks out of the worker (verified 2026-10-24 on Claude Code 2.1.310); our `--settings` hook still loads. Revisit when `--bare` becomes the `-p` default.
 - Compiled agents land in `.agent-team/compiled/<run-id>/` and reach Claude Code through `--agents`, `--agent` and `--settings`; only step 8 `configure` writes a target repository's `.claude/`. Skills are inlined into the agent prompt instead of preloaded through the `skills` field.
 - Model IDs in the registry are the pinned snapshots `claude-sonnet-5-5` and `claude-opus-5-5`; a `fallbackModel` chain of one step (Opus to Sonnet for review) is emitted.
+- The registry lives at `canonical/routing/registry.yaml`, not a repo-root `routing/`: `agent-team validate` checks it with the rest of the tree (including that every agent's `model_class` has an entry) and `--canonical` finds it. It is the only canonical file allowed to name vendors or model ids. Only the two locked classes ship; section 10's other classes and the Codex entry arrive with the step that needs them. Cost fields are optional so a local model can omit them.
+- The fallback chain reaches Claude Code as a `fallbackModel` array in the compiled `--settings` file, not the `--fallback-model` flag (checked against the Claude Code settings and CLI reference, 2026-10-24, on 2.1.310). The highest-precedence file that sets the key supplies the whole chain, and `--settings` outranks every file but managed settings, so only a host's managed `fallbackModel` can replace it. Chains are per model, one step, never transitive, and at most two fallbacks (Claude Code keeps three models). `--model` overrides the resolved model and keeps the class's chain minus the override; an id outside the registry is accepted and the transition note says so. Not yet observed: a real fallback switch, which needs an overloaded model, and whether the chain covers a session started with `--agent` (the docs state it for subagents).
 - Lint and type-check commands come from `init` discovery; if none are detected, the gate is skipped and the run record says so.
 - The reviewer's requirement ids are the acceptance-criteria ids the requirements-analyst or the plan assigns; a bug-fix plan with no explicit criteria gets one synthetic criterion: the reproduction command passes.
 

@@ -81,6 +81,7 @@ def test_reviewer_runs_bash_inside_srt_and_returns_a_verdict(repo: Path) -> None
         calls = store.tool_calls(record.run_id)
         transitions = store.transitions(record.run_id)
     assert "srt sandbox" in (transitions[1].note or ""), "the run must be sandboxed"
+    assert f"model {MODEL} (--model override" in (transitions[1].note or ""), "the override is recorded"
     bash_ok = [c for c in calls if c.tool_name == "Bash" and c.result_status == "ok"]
     assert bash_ok, f"no Bash call succeeded inside srt: {[(c.tool_name, c.result_status) for c in calls]}"
     assert 0 < record.cost_usd <= BUDGET_USD * 1.5, "cost is recorded and the budget cap held"

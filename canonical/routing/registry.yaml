@@ -1,0 +1,27 @@
+# Model registry (section 6 of docs/ARCHITECTURE.md). The only canonical file
+# that names vendors and model ids; agents name a model_class and this file
+# resolves it. Prices are list prices (USD per million tokens) as of 2026-10.
+kind: registry
+
+models:
+  claude-sonnet-5-5:
+    provider: anthropic
+    capabilities: [coding, review, structured-output, tool-use]
+    context_tokens: 1000000
+    cost:
+      input_usd_per_mtok: 2.00
+      output_usd_per_mtok: 10.00
+    privacy_class: vendor-cloud
+  claude-opus-5-5:
+    provider: anthropic
+    capabilities: [coding, review, structured-output, tool-use]
+    context_tokens: 1000000
+    cost:
+      input_usd_per_mtok: 4.00
+      output_usd_per_mtok: 20.00
+    privacy_class: vendor-cloud
+    fallbacks: [claude-sonnet-5-5] # one step: review falls back to Sonnet when Opus is unavailable
+
+classes:
+  strong-coding: claude-sonnet-5-5 # implements
+  independent: claude-opus-5-5 # reviews

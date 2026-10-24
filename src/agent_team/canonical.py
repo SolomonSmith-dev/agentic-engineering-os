@@ -8,6 +8,7 @@ Layout (section 6 of docs/ARCHITECTURE.md):
     canonical/tools/*.yaml
     canonical/policies/*.yaml
     canonical/environments/*.yaml
+    canonical/routing/registry.yaml model entries and class -> model resolution
 
 Every problem is reported as a `Problem(file, field, message)` so the caller
 can print `path: field: message` and the user knows exactly what to fix.
@@ -34,6 +35,7 @@ LAYOUT: dict[str, tuple[str, str]] = {
     "tools": ("tool", "*.yaml"),
     "policies": ("policy", "*.yaml"),
     "environments": ("environment", "*.yaml"),
+    "routing": ("registry", "registry.yaml"),
 }
 
 BODY_REQUIRED = {"agent", "skill"}
@@ -129,7 +131,7 @@ def validate_document(path: Path, kind: str) -> tuple[Document | None, list[Prob
 
 
 def _cross_check(report: Report) -> None:
-    """Referential rules that span files: an agent's skills must exist."""
+    """Referential rules that span files: an agent's skills and model class must exist."""
     skills = {d.spec.name for d in report.documents if d.kind == "skill" and d.spec is not None}
     for doc in report.documents:
         if doc.kind != "agent" or doc.spec is None:
@@ -146,6 +148,14 @@ def _cross_check(report: Report) -> None:
         if doc.spec.name != doc.path.stem:
             report.problems.append(
                 Problem(doc.path, "name", f"name {doc.spec.name!r} must match file stem {doc.path.stem!r}")
+            )
+    registry = next((d.spec for d in report.documents if d.kind == "registry" and d.spec is not None), None)
+    for doc in report.documents:
+        if registry is None or doc.kind != "agent" or doc.spec is None:
+            continue
+        if doc.spec.model_class not in registry.classes:
+            report.problems.append(
+                Problem(doc.path, "model_class", f"model class {doc.spec.model_class!r} is not in routing/registry.yaml")
             )
     for doc in report.documents:
         if doc.kind == "skill" and doc.spec is not None and doc.spec.name != doc.path.parent.name:

@@ -5,7 +5,8 @@ through flags, so nothing is written into the target repository's `.claude/`
 (only `configure`, step 8, writes there):
 
     agents.json       --agents: the agent, its tools and its prompt
-    settings.json     --settings: permission allow/deny rules, dontAsk, PreToolUse hook
+    settings.json     --settings: permission allow/deny rules, dontAsk, PreToolUse hook,
+                      and the model's fallbackModel chain
     policy.json       read by the hook: protected paths and the roots they resolve against
     agents/<name>.md  the same agent as a native subagent file, for inspection and step 8
     schema.json       --json-schema, when the agent's output has a registered schema
@@ -46,6 +47,7 @@ STRUCTURED_OUTPUT_TOOL = "StructuredOutput"
 class CompiledAgent:
     name: str
     model: str
+    fallbacks: tuple[str, ...]
     ceiling: Autonomy
     directory: Path
     agents_json: Path
@@ -101,6 +103,7 @@ def compile_agent(
     *,
     ceiling: Autonomy,
     model: str,
+    fallbacks: tuple[str, ...] = (),
     out_dir: Path,
     roots: list[Path],
     home: Path,
@@ -143,6 +146,10 @@ def compile_agent(
         },
         "attribution": {"commit": "", "pr": ""},
     }
+    if fallbacks:
+        # The whole chain comes from the highest-precedence file that sets it, and --settings
+        # outranks every file but managed settings, so a host's own chain cannot leak in.
+        settings["fallbackModel"] = list(fallbacks)
     settings_json = out_dir / "settings.json"
     settings_json.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
 
@@ -173,6 +180,7 @@ def compile_agent(
     return CompiledAgent(
         name=agent.name,
         model=model,
+        fallbacks=fallbacks,
         ceiling=ceiling,
         directory=out_dir,
         agents_json=agents_json,

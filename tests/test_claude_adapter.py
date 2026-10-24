@@ -10,6 +10,7 @@ snapshots after an intended change with
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -19,10 +20,11 @@ from typer.testing import CliRunner
 
 from agent_team.adapters.claude import StreamParser, build_invocation, compile_agent, normalize, resolve
 from agent_team.adapters.claude.hook import check
-from agent_team.canonical import parse_file
+from agent_team.canonical import parse_file, validate_tree
 from agent_team.cli import app
 from agent_team.environments import acquire
 from agent_team.environments.sandbox import Sandbox
+from agent_team.run_agent import Canonical, RunAgentError, pick_model
 from agent_team.runs import RunStore
 from agent_team.schemas import AgentSpec, PolicySpec
 from agent_team.schemas.adapter import ReviewVerdict
@@ -32,6 +34,7 @@ REPO = Path(__file__).resolve().parents[1]
 CANONICAL = REPO / "canonical"
 FIXTURES = Path(__file__).parent / "fixtures" / "claude"
 MODEL = "claude-opus-5-5"
+FALLBACK = "claude-sonnet-5-5"
 runner = CliRunner()
 
 
@@ -128,6 +131,7 @@ def test_compiled_reviewer_matches_snapshot(name: str, tmp_path: Path) -> None:
         policy(),
         ceiling="A2",
         model=MODEL,
+        fallbacks=(FALLBACK,),
         out_dir=tmp_path / "compiled",
         roots=[tmp_path / "worktree", tmp_path / "repo"],
         home=tmp_path / "home",
@@ -452,12 +456,21 @@ def fake_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return _install
 
 
-def invoke_run(repo: Path, *extra: str):
+def invoke_run(repo: Path, *extra: str, canonical: Path = CANONICAL):
+    """Run the reviewer with no --model: the registry resolves its class."""
     return runner.invoke(
         app,
-        ["run", "--agent", "independent-reviewer", "--model", MODEL, "--repo", str(repo),
-         "--canonical", str(CANONICAL), "--test-command", "uv run pytest", *extra, "Review the diff against AC-1."],
+        ["run", "--agent", "independent-reviewer", "--repo", str(repo),
+         "--canonical", str(canonical), "--test-command", "uv run pytest", *extra, "Review the diff against AC-1."],
     )  # fmt: skip
+
+
+def seen_by_fake(repo: Path, run_id: str) -> dict:
+    return json.loads((repo / ".agent-team" / "tmp" / run_id / "fake-claude.json").read_text())
+
+
+def arg_after(argv: list[str], name: str) -> str:
+    return argv[argv.index(name) + 1]
 
 
 def only_run(repo: Path):
@@ -481,9 +494,14 @@ def test_run_reviewer_end_to_end(repo: Path, fake_path) -> None:
     assert run.worktree_path == str(repo / ".agent-team" / "worktrees" / run.run_id)
     assert [t.to_state for t in transitions] == ["INTAKE", "PLAN_REVIEW"], "the agent's first state trigger"
     assert "autonomy ceiling A2" in transitions[1].note
+    assert "model claude-opus-5-5 (class independent); fallback claude-sonnet-5-5" in transitions[1].note
     assert [(c.tool_name, c.result_status) for c in calls] == [("Bash", "ok"), ("Bash", "error")]
 
-    seen = json.loads((repo / ".agent-team" / "tmp" / run.run_id / "fake-claude.json").read_text())
+    seen = seen_by_fake(repo, run.run_id)
+    assert arg_after(seen["argv"], "--model") == MODEL, "the registry resolves the reviewer's class to Opus"
+    assert "--fallback-model" not in seen["argv"], "the chain travels in --settings, not as a flag"
+    settings = json.loads(Path(arg_after(seen["argv"], "--settings")).read_text())
+    assert settings["fallbackModel"] == [FALLBACK]
     assert seen["stdin"] == "Review the diff against AC-1.", "the prompt goes in on stdin"
     assert "Review the diff" not in " ".join(seen["argv"])
     assert seen["cwd"] == run.worktree_path
@@ -492,6 +510,46 @@ def test_run_reviewer_end_to_end(repo: Path, fake_path) -> None:
     assert not (repo / ".agent-team" / "lock").exists(), "the lock is released"
     assert (repo / ".agent-team" / "compiled" / run.run_id / "agents" / "independent-reviewer.md").is_file()
     assert not (repo / ".claude").exists(), "nothing is written into the target repo's .claude/"
+
+
+def test_model_flag_overrides_the_registry(repo: Path, fake_path) -> None:
+    fake_path()
+    result = invoke_run(repo, "--model", FALLBACK)
+    assert result.exit_code == 0, result.output
+    run, transitions, _ = only_run(repo)
+    assert run.model_class == "independent", "the run record keeps the class; the note names the model"
+    assert "model claude-sonnet-5-5 (--model override); fallback none" in transitions[1].note
+    seen = seen_by_fake(repo, run.run_id)
+    assert arg_after(seen["argv"], "--model") == FALLBACK
+    settings = json.loads(Path(arg_after(seen["argv"], "--settings")).read_text())
+    assert "fallbackModel" not in settings, "a model never falls back to itself"
+
+
+def test_run_without_a_registry_records_nothing(repo: Path, fake_path, tmp_path: Path) -> None:
+    fake_path()
+    canonical = tmp_path / "canonical"
+    shutil.copytree(CANONICAL, canonical)
+    shutil.rmtree(canonical / "routing")
+    result = invoke_run(repo, canonical=canonical)
+    assert result.exit_code == 2 and "needs routing/registry.yaml" in result.output
+    assert RunStore.open(repo, create=False) is None
+
+
+def test_run_with_an_unknown_model_class_records_nothing(repo: Path, fake_path, tmp_path: Path) -> None:
+    fake_path()
+    canonical = tmp_path / "canonical"
+    shutil.copytree(CANONICAL, canonical)
+    agent = canonical / "agents" / "independent-reviewer.md"
+    agent.write_text(agent.read_text().replace("model_class: independent", "model_class: fast-cheap", 1))
+    result = invoke_run(repo, "--model", MODEL, canonical=canonical)
+    assert result.exit_code == 2 and "'fast-cheap' is not in routing/registry.yaml" in result.output
+    assert RunStore.open(repo, create=False) is None
+
+
+def test_unknown_class_is_a_run_error() -> None:
+    canonical = Canonical(validate_tree(CANONICAL).documents)
+    with pytest.raises(RunAgentError, match="'fast-cheap' is not in the registry"):
+        pick_model(canonical, "fast-cheap", None)
 
 
 def test_run_budget_abort_is_recorded_with_reason(repo: Path, fake_path) -> None:

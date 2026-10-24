@@ -81,5 +81,8 @@
   "attribution": {
     "commit": "",
     "pr": ""
-  }
+  },
+  "fallbackModel": [
+    "claude-sonnet-5-5"
+  ]
 }

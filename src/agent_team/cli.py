@@ -111,7 +111,9 @@ def trace(
 def run(
     prompt: str | None = typer.Argument(None, help="The task for the agent; omit to read it from --prompt-file."),
     agent: str = typer.Option(..., "--agent", "-a", help="Canonical agent to run, e.g. independent-reviewer."),
-    model: str = typer.Option(..., "--model", "-m", help="Model id until the registry (step 7) resolves model classes."),
+    model: str | None = typer.Option(
+        None, "--model", "-m", help="Override the model the registry resolves for the agent's model class."
+    ),
     prompt_file: Path | None = typer.Option(None, "--prompt-file", help="Read the prompt from this file."),
     repo: Path = typer.Option(Path("."), "--repo", "-C", help="Target repository; defaults to the current directory."),
     canonical: Path = typer.Option(Path("canonical"), "--canonical", help="Directory holding the canonical files."),
