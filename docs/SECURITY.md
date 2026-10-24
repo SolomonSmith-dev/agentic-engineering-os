@@ -27,7 +27,7 @@ A run's ceiling is the lowest of:
 
 1. the agent's `max_autonomy` (`canonical/agents/*.md`),
 2. the policy's `autonomy_ceiling` for that agent, or `default_autonomy` (A0) when it has none (`canonical/policies/default.yaml`; `requested_autonomy` in `src/agent_team/run_agent.py`),
-3. for a workflow's writing agents, the `autonomy_ceiling` you approved in `.agent-team/config.yaml` (`_writer_ceiling` in `src/agent_team/orchestrator/executors.py`), which the bootstrapper caps at A3 (`MAX_BOOTSTRAP_AUTONOMY` in `src/agent_team/schemas/bootstrap.py`),
+3. for a workflow's writing agents, the `autonomy_ceiling` you approved in `.agent-team/config.yaml` (`_writer_ceiling` in `src/agent_team/orchestrator/executors.py`), which the proposal caps at A3 (`MAX_BOOTSTRAP_AUTONOMY` in `src/agent_team/schemas/bootstrap.py`; `config.yaml` itself is not re-checked, so a hand edit above A3 is accepted, though no canonical agent's `max_autonomy` exceeds A3),
 4. A2 when srt is not installed (`effective_ceiling` in `src/agent_team/environments/sandbox.py`).
 
 The default policy sets the reviewer to A2, the implementer to A3 and the archaeologist to A0.
@@ -55,7 +55,7 @@ An agent lists capabilities in `capabilities.allow`. The Claude adapter (`src/ag
 
 Denied in every compiled session, whatever the agent asks for (`ALWAYS_DENY`): `WebFetch`, `WebSearch`, `git push`, `git branch -d`, `git branch -D`, `git reset --hard`, `git config`, and `gh`. Each command is denied both bare and with arguments.
 
-The orchestrator, not the agent, pushes and opens the PR (`src/agent_team/orchestrator/pr.py`). It pushes exactly the reviewed commit to `refs/heads/agent-team/<run-id>` on `origin`, refuses any other branch name or a `+` force refspec, never passes `--force`, and disables repository hooks (`core.hooksPath=/dev/null`, `--no-verify`). It opens the PR only as `gh pr create --draft`, only at A3, only when the policy does not deny `github.pr.create`, only when the canonical tool for it is `gh pr create --draft`, only when `draft_prs` is not turned off in the approved proposal, and only when the policy's `required_gates` passed (`_pr_refusals` and `_failed_gates` in `src/agent_team/orchestrator/executors.py`).
+The orchestrator, not the agent, pushes and opens the PR (`src/agent_team/orchestrator/pr.py`). It pushes exactly the reviewed commit to `refs/heads/agent-team/<run-id>` on `origin`, refuses a branch outside `agent-team/` or a `+` force refspec (`push`; the caller checks the worktree is on exactly `agent-team/<run-id>`), never passes `--force`, and disables repository hooks (`core.hooksPath=/dev/null`, `--no-verify`). It opens the PR only as `gh pr create --draft`, only at A3, only when the policy does not deny `github.pr.create`, only when the canonical tool for it is `gh pr create --draft`, only when `draft_prs` is not turned off in the approved proposal, and only when the policy's `required_gates` passed, except for an escalated run, whose draft is titled `[blocked]` and lists the failed gates (`_pr_refusals` and `_failed_gates` in `src/agent_team/orchestrator/executors.py`).
 
 The Codex runtime has no per-command rules. There, the granted capabilities pick Codex's narrowest `sandbox_mode` (`read-only` for the reviewer), and srt does the rest (`src/agent_team/adapters/codex/capabilities.py`).
 
@@ -87,7 +87,7 @@ The hook is a tripwire, not a boundary. A process that builds a path at run time
 When `srt` is installed and the environment's tier is `srt` (`canonical/environments/default.yaml`), every worker and every repository command agent-team runs is wrapped in it (`src/agent_team/environments/sandbox.py`):
 
 - **Network**: denied except the environment's `allowed_domains`: `api.anthropic.com`, `github.com`, `*.github.com`, `*.githubusercontent.com`, `pypi.org`, `files.pythonhosted.org`, `registry.npmjs.org` by default. A Codex run adds only its auth mode's hosts.
-- **Writes**: only the worktree, the run's temp directory, and the corners of `.git` a commit on the run's branch needs: the object store, the worktree's admin directory, and `refs/heads/agent-team/`. `main` and every other ref, `.git/hooks` and `.git/config` stay read-only, so a sandboxed commit cannot plant a hook or config that later runs outside the sandbox.
+- **Writes**: only the worktree, the run's temp directory, and the corners of `.git` a commit on the run's branch needs: the object store, the worktree's admin directory, and `refs/heads/agent-team/` with its reflog under `logs/`. `main` and every other ref, `.git/hooks` and `.git/config` stay read-only, so a sandboxed commit cannot plant a hook or config that later runs outside the sandbox.
 - **Reads denied**: `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.git-credentials`, `~/.netrc` for every run. `inspect`'s command verification and the Codex runtime also deny the policy's protected paths (`srt_deny_read` in `src/agent_team/adapters/codex/compile.py`).
 - **Its own rules are out of reach**: the settings file lives in `.agent-team/sandbox/`, outside the worktree.
 
@@ -108,7 +108,7 @@ A worker does not inherit your shell. `build_invocation` in `src/agent_team/adap
 - the run's own variables: `CLAUDE_CODE_TMPDIR`, `TMPDIR`, `AGENT_TEAM_PORT_OFFSET`, and `CLAUDE_CODE_TOOL_MEMORY_LIMIT=none` inside srt,
 - `ANTHROPIC_API_KEY`, and only in API-key mode.
 
-`GH_TOKEN`, `GITHUB_TOKEN`, cloud credentials and Claude Code session variables never reach it. Repository commands run by `inspect` and by the workflow's DISCOVERY and TEST steps get the same allowlist and no stdin; `inspect` adds `CI=1`.
+`GH_TOKEN`, `GITHUB_TOKEN`, cloud credentials and Claude Code session variables never reach it. Repository commands run by `inspect` and by the workflow's DISCOVERY and TEST steps get the same allowlist and no stdin; `inspect` adds `CI=1` and points `XDG_CACHE_HOME` into the run's temp directory.
 
 The worker reads its prompt on stdin. It does not load the target repository's settings or hooks:
 
@@ -137,7 +137,7 @@ Everything stored in `.agent-team/runs.db` passes through `src/agent_team/runs/r
 - replaces the value under any credential-looking key,
 - scrubs known token shapes (Anthropic, OpenAI, GitHub, Slack, AWS, Google, JWTs, private keys, bearer and basic auth, URL userinfo) and `NAME=value` assignments whose name looks like a credential,
 - applies the policy's own `redaction` patterns,
-- runs before truncation, so a secret is never stored in part.
+- runs before the stored summary is truncated, so the cut cannot leave half a secret. A string longer than 8192 characters is cut before it is scanned, and a token straddling that cut can survive in part.
 
 The same redaction applies to:
 

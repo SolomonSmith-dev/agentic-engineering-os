@@ -56,7 +56,7 @@ Mitigations:
 
 - **Capabilities are the boundary, not the prompt.** Sessions run in `dontAsk`, so any call no allow rule covers is denied without a prompt (`resolve` and `PERMISSION_MODE` in `src/agent_team/adapters/claude/capabilities.py` and `compile.py`).
 - **Some commands are denied for every agent.** `git push`, `git branch -d/-D`, `git reset --hard`, `git config`, `gh`, `WebFetch` and `WebSearch` (`ALWAYS_DENY`).
-- **Autonomy ceilings cap what a session can be given.** They are the lowest of the agent, the policy and the approved config, and A2 without srt (`requested_autonomy` in `src/agent_team/run_agent.py`, `_writer_ceiling` in `executors.py`, `effective_ceiling` in `sandbox.py`). The bootstrapper never accepts above A3 (`Ask._at_most_a3` in `src/agent_team/schemas/bootstrap.py`), and no capability needs more than A3.
+- **Autonomy ceilings cap what a session can be given.** They are the lowest of the agent, the policy and the approved config, and A2 without srt (`requested_autonomy` in `src/agent_team/run_agent.py`, `_writer_ceiling` in `executors.py`, `effective_ceiling` in `sandbox.py`). The proposal never accepts above A3 (`Ask._at_most_a3` in `src/agent_team/schemas/bootstrap.py`), and no capability needs more than A3. `config.yaml` is not re-validated against A3, so a hand edit can raise it, bounded by each agent's own `max_autonomy`.
 - **The reviewer is independent of the implementer.** It runs in a fresh process and a fresh worktree, reads only the plan, the diff and the orchestrator's check output, never the implementer's transcript or report (`canonical/workflows/bug-fix.yaml` node `inputs`, `CODE_REVIEW` in `executors.py`). A blocker or major finding cannot approve (`_after_review` in `executors.py`).
 - **The only outward action is a draft PR on the run's own branch, opened by the orchestrator, and a human decides.** (`push`, `create` in `src/agent_team/orchestrator/pr.py`; the `HUMAN_DECISION` state.)
 - **`inspect` runs only what discovery found.** Commands only the archaeologist suggested are recorded `unverified` and never run (`src/agent_team/memory/inspect.py`).
@@ -64,7 +64,7 @@ Mitigations:
 Residual:
 
 - Injection can still steer the code the implementer writes, within its capabilities. The reviewer and the draft PR are the checks, and both can be fooled: the diff the reviewer reads is attacker-influenced text too.
-- The reviewer's class `independent` and the implementer's `strong-coding` both resolve to Claude models (`routing/registry.yaml`). Section 4's rule that they never share a vendor is not met in the MVP; `--runtime codex` for the reviewer is opt-in and untested against a real Codex.
+- The reviewer's class `independent` and the implementer's `strong-coding` both resolve to Claude models (`routing/registry.yaml`). Section 4's rule that they never share a vendor is not met in the MVP; `--runtime codex` is accepted only for `run --agent independent-reviewer`, not inside a workflow, and is untested against a real Codex.
 - In login mode the worker runs with `--setting-sources ""`, which keeps the repository's settings and hooks out. Whether the target's `CLAUDE.md` still reaches the worker as context in that mode is not verified here. API-key mode uses `--bare`, which skips `CLAUDE.md`.
 
 ### T2. A worker reads a host or GitHub credential
@@ -141,15 +141,16 @@ Attacker: R1, R4. Assets A1, A5.
 Mitigations:
 
 - **`init` runs nothing from the repository.** Files are parsed as data (`yaml.safe_load`, `tomllib`, `json`), capped in size (`SCAN_MAX_BYTES`), and read without following symlinks out of the root. Binaries are looked up only as absolute paths, so a binary planted in the repository is never found (`_which` in `src/agent_team/doctor.py`). There are no `make -n`, `--help` or `--collect-only` probes (`src/agent_team/bootstrap/discovery.py`).
-- **Repository commands run only inside srt,** with a scrubbed environment, no stdin and a timeout that kills the process group. Without srt they do not run at all (`run_command` in `src/agent_team/orchestrator/workspace.py`, `verify_commands` in `src/agent_team/memory/verify.py`).
+- **Repository commands run only inside srt,** with a scrubbed environment, no stdin and a timeout that kills the process group. Without srt the orchestrator and `inspect` run none (`run_command` in `src/agent_team/orchestrator/workspace.py`, `verify_commands` in `src/agent_team/memory/verify.py`).
 - **The worker never loads the repository's Claude Code settings, hooks or MCP servers.** It runs with `--setting-sources ""` or `--bare`, plus `--strict-mcp-config` (`build_invocation` in `invoke.py`). Codex runs with `--ignore-user-config --ignore-rules --ephemeral` (`src/agent_team/adapters/codex/invoke.py`).
 - **`configure` never writes through a symlink and never writes `.claude/settings.json`** (`src/agent_team/bootstrap/configure.py`).
 
 Residual:
 
-- **agent-team trusts the local `.git/`.** Its own `git` calls (discovery, the worktree allocator in `src/agent_team/environments/worktree.py`) honour the repository's `.git/config` and hooks. A clone you made yourself has a `.git/config` git wrote. A repository directory received as an archive can carry one that runs code on any git command (`core.fsmonitor`, hooks), before agent-team runs anything. Clone repositories yourself.
-- **The allocator's `git worktree add` does not set `core.hooksPath=/dev/null`.** Unlike the orchestrator's `SAFE_GIT`, it runs your local `post-checkout` hook on the host.
+- **agent-team trusts the local `.git/`.** Its own `git` calls (discovery, the worktree allocator in `src/agent_team/environments/worktree.py`) honour the repository's `.git/config` and hooks. A clone you made yourself has a `.git/config` git wrote. A repository directory received as an archive can carry one that runs code on any git command (`core.fsmonitor`, hooks), before agent-team runs anything. Clone repositories yourself. Binaries: `claude`, `codex` and `gh` are looked up as absolute paths only; `srt` is found with plain `shutil.which` and `git` is called by name, so both resolve through your `PATH`.
+- **The allocator's git calls do not set `core.hooksPath=/dev/null`.** Unlike the orchestrator's `SAFE_GIT`, `git worktree add` and the archive step (`_archive`) in `worktree.py` run with your local hooks, on the host; `git worktree add` runs `post-checkout`.
 - **Repository commands can still reach the network allowlist (T5) and read what srt does not deny (T3).**
+- **Without srt, an A2 agent granted `test.run` runs the named test commands with no sandbox** (`CAPABILITY_RULES` in `capabilities.py`: only `shell.execute.workspace` is in `SANDBOX_ONLY`).
 
 ### T7. A sandboxed process plants code that later runs outside the sandbox
 
@@ -157,7 +158,7 @@ Attackers: R1, R2, R3. Asset A5.
 
 Mitigations:
 
-- **srt allows writes only where a commit on the run branch needs them:** the worktree, the run's temp directory, `.git/objects`, the worktree's admin directory, and `refs/heads/agent-team/`. `.git/hooks` and `.git/config` are read-only, and the worktree's `.git` file is write-denied (`git_write_paths`, `build_settings` in `sandbox.py`).
+- **srt allows writes only where a commit on the run branch needs them:** the worktree, the run's temp directory, `.git/objects`, the worktree's admin directory, and `refs/heads/agent-team/` with its reflog. `.git/hooks` and `.git/config` are read-only, and the worktree's `.git` file is write-denied (`git_write_paths`, `build_settings` in `sandbox.py`).
 - **The hook blocks file-tool writes into git metadata,** symlinks followed (`check` in `hook.py`).
 - **The orchestrator's own git runs with hooks off and signing off** (`SAFE_GIT` in `src/agent_team/orchestrator/workspace.py`), and pushes with `--no-verify` (`push` in `pr.py`).
 - **srt's settings file lives outside the worktree** (`settings_path` in `sandbox.py`).
@@ -172,9 +173,9 @@ Attackers: R2, R3. Asset A5.
 
 Mitigations:
 
-- **Destructive git commands are denied for every agent:** `git push`, branch deletion, `git reset --hard` and `git config` (`DENIED_COMMANDS`).
+- **Destructive git commands are denied for every agent:** `git push`, `git branch -d`, `git branch -D`, `git reset --hard` and `git config`, each bare and with arguments (`DENIED_COMMANDS`). These are prefix rules: `git branch --delete`, `git update-ref -d` or `git -c x=y push` are not matched, and the sandbox's read-only refs (T7) are what stop them touching anything outside `agent-team/`.
 - **The sandbox keeps every ref outside `agent-team/` read-only,** including `main` (T7).
-- **The orchestrator pushes only `<head>:refs/heads/agent-team/<run-id>`.** It refuses any other branch or a `+` refspec, never passes `--force`, and opens the PR only as a draft (`push`, `create` in `pr.py`; `_pr_refusals` in `executors.py`).
+- **The orchestrator pushes only `<head>:refs/heads/agent-team/<run-id>`.** `push` refuses a branch outside `agent-team/` or a `+` refspec, the caller checks the worktree is on exactly `agent-team/<run-id>`, never passes `--force`, and opens the PR only as a draft (`push`, `create` in `pr.py`; `_pr_refusals` in `executors.py`).
 - **Disposing a worktree saves its work as a patch first** (`_archive` in `worktree.py`).
 
 Residual:
@@ -214,7 +215,7 @@ Mitigations:
 Residual:
 
 - **Nothing verifies a signature.** `uv tool install .` trusts your clone.
-- **The runtime binaries on `PATH` are trusted.** `claude`, `srt`, `codex`, `gh` and `git` must be absolute paths, but are not otherwise checked beyond a version or flag probe (`check_version`, `check_flags`).
+- **The runtime binaries on `PATH` are trusted.** `claude`, `codex` and `gh` must resolve to absolute paths (`_which` in `doctor.py`); `srt` and `git` resolve through `PATH` as-is. None is checked beyond a version or flag probe (`check_version`, `check_flags`).
 - **Dependencies the target repository's commands install are R4 inside the sandbox.**
 
 ### T11. Code reaches a model vendor you did not approve
@@ -224,11 +225,12 @@ Asset A7.
 Mitigations:
 
 - **The policy's `allowed_privacy_classes` limits which registry privacy classes a model may have.** A primary model outside them refuses the run, and a fallback outside them is dropped (`resolve_model` in `routing.py`).
-- **`configure` intersects them with the approved `privacy_classes`** (`plan_configure` in `configure.py`).
+- **`configure` intersects them with the approved `privacy_classes` for the compiled `.claude/agents/` files** (`plan_configure` in `configure.py`).
 - **The run record notes the resolved model and its fallback chain.**
 
 Residual:
 
+- **The approved `privacy_classes` in `config.yaml` are not read at run time.** `run` and `inspect` check only the policy's `allowed_privacy_classes`, and the default policy sets none, so every class is allowed until a policy pins them.
 - **Everything an agent reads goes to that vendor.** Privacy classes describe the registry entry; agent-team cannot verify the vendor's handling.
 - **Login mode uses your account's data terms.**
 

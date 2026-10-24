@@ -119,7 +119,7 @@ agent-team configure /path/to/repo --canonical $AT/canonical             # the d
 
 Configure (`src/agent_team/bootstrap/configure.py`) needs `approved: true` except under `--dry-run`. It prints a unified diff of every file it will write and asks before writing; `--yes` skips the question. It writes:
 
-- `.agent-team/config.yaml`: the approved ask plus the ✓ commands by kind. The bug-fix workflow's TEST step reads these as its test, lint and type-check gates.
+- `.agent-team/config.yaml`: the approved ask plus the ✓ commands by kind, and the ✗ ones under `unverified_commands` (`inspect` runs both). The bug-fix workflow's TEST step reads these as its test, lint and type-check gates.
 - A marked block (`<!-- agent-team:begin -->` to `<!-- agent-team:end -->`) appended to `CLAUDE.md`, and to `AGENTS.md` if it exists. Text outside the block is never changed; a re-run updates the block in place and writes nothing when nothing changed. A `CLAUDE.md` that imports `@AGENTS.md` is left alone.
 - `.claude/agents/<name>.md` for each canonical agent, compiled at the lower of its own ceiling, the policy's and the approved one.
 
@@ -166,7 +166,7 @@ The workflow (`canonical/workflows/bug-fix.yaml`, driven by `src/agent_team/orch
 INTAKE -> DISCOVERY -> PLAN -> IMPLEMENTATION -> TEST -> CODE_REVIEW -> PR -> HUMAN_DECISION
 ```
 
-- **DISCOVERY**: the implementer commits a failing regression check on the run branch `agent-team/<run-id>` and names the command that runs it. The orchestrator re-runs that command in the sandbox; the gate is what it saw fail, not what the agent said.
+- **DISCOVERY**: the implementer commits a failing regression check on the run branch `agent-team/<run-id>` and names the command that runs it. The orchestrator re-runs that command in the sandbox; the gate is what it saw fail, not what the agent said. Without srt the orchestrator runs nothing, and the gate falls back to the agent's own report, marked unverified in the run record and the PR body.
 - **IMPLEMENTATION**: the implementer fixes the bug in the same worktree.
 - **TEST**: the orchestrator runs the reproduction, then every test, lint and type-check command from `config.yaml` plus any `--test-command`, `--lint-command` and `--typecheck-command` flags, in srt, at exactly the diff's head. All must pass. A kind with no command is skipped and named in the PR body.
 - **CODE_REVIEW**: the independent reviewer, in a fresh process and a fresh worktree at the same commit, gets the plan, the diff and the check output, never the implementer's transcript. A blocker or major finding turns `approve` into `changes`. One `changes` sends the run back to IMPLEMENTATION; a second, or `escalate`, still goes to PR, where the draft is titled `[blocked]` and the run ends `blocked` at HUMAN_DECISION.
@@ -201,7 +201,7 @@ Section 9's step 8, `agent-team eval --last`, belongs to build-order step 13 and
 ## What the bootstrap never does
 
 - Runs repository code during `init`: discovery reads files and runs only read-only `git` queries.
-- Runs repository code outside srt: `inspect` and the workflow's TEST step run nothing when srt is absent.
+- Runs repository code outside srt itself: `inspect`'s verification and the workflow's DISCOVERY and TEST commands run nothing when srt is absent. An A2 agent granted `test.run` can still run the named test commands without a sandbox (see [THREAT_MODEL.md](THREAT_MODEL.md#t5-exfiltration-over-the-network)).
 - Replaces an instruction file: configure appends or updates one marked block.
 - Writes `.claude/settings.json`, `~/.claude`, or anything outside the target repository.
 - Accepts an autonomy ceiling above A3.
