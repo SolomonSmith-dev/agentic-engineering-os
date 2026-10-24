@@ -4,6 +4,13 @@
 
 Status: build-order steps 1 to 12 of 15 are merged, version 0.1.0. The CLI answers `--version`, checks the host (`agent-team doctor`), discovers and configures a target repository (`agent-team init`, `agent-team configure`), builds repository memory with the archaeologist (`agent-team inspect`), runs one canonical agent end to end (`agent-team run --agent`, on Claude Code or, for the reviewer, Codex), runs the bug-fix workflow from reproduction to a draft PR (`agent-team run --workflow bug-fix`, `agent-team resume`), reads the run record (`agent-team trace`), sweeps stale run worktrees (`agent-team env sweep`), validates `canonical/` against the pydantic schemas (`agent-team validate`) and exports them as JSON Schema (`agent-team schema export`). See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the target design and build order.
 
+## Docs
+
+- [docs/BOOTSTRAP.md](docs/BOOTSTRAP.md): day one on a new repository, from install to the first draft PR.
+- [docs/SECURITY.md](docs/SECURITY.md): what the tool protects and how; reporting a vulnerability.
+- [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md): assets, trust boundaries, attackers, threats and residual risk.
+- [docs/spec/](docs/spec/README.md): one reference page per canonical kind, generated from the JSON Schemas (`agent-team schema docs`).
+
 ## Install
 
 ```bash
