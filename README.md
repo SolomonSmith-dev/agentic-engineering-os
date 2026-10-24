@@ -59,6 +59,33 @@ After changing the adapter, the sandbox or the run path, run the opt-in live che
 AGENT_TEAM_LIVE=1 uv run pytest -q -m live
 ```
 
+## Run a workflow
+
+`agent-team run --workflow bug-fix` runs a canonical workflow through the orchestrator instead of a single agent. The orchestrator builds a DAG from `canonical/workflows/bug-fix.yaml` (a linear chain for now) and walks it: each node names its state, who works in it (a canonical agent or an in-process step), the evidence it must leave, and the gate that must pass to move on.
+
+```text
+INTAKE -> DISCOVERY -> PLAN -> IMPLEMENTATION -> TEST -> CODE_REVIEW -> PR -> HUMAN_DECISION
+
+gates:  DISCOVERY -> PLAN        reproduction_fails  (reproduction recorded before the fix)
+        TEST -> CODE_REVIEW      tests_pass          (orchestrator-run, after the fix)
+        CODE_REVIEW -> PR        reviewer_verdict == approve
+```
+
+- A gate is `<evidence>` (passes only when that evidence is `true`) or `<evidence> == <value>`. A node that leaves out required evidence, reports a blocker, or fails every gate moves the run to BLOCKED, and the run ends `blocked`.
+- The reviewer's `changes` verdict sends the run back to IMPLEMENTATION once (the implementer gets the plan and the findings, in a fresh process). A second `changes`, or an `escalate` verdict, takes the escalate edge to PR: the draft PR is marked blocked and the run ends `blocked` at HUMAN_DECISION.
+- Each node sees only the evidence its `inputs` list names; the reviewer gets the plan, the diff and the orchestrator's test output, never an implementer transcript.
+- Agent nodes run through the same path as `run --agent`, each as its own child run (`agent:<name>` in `trace`); their cost is added to the workflow run. `--max-budget-usd` and `--timeout` apply to each agent call. `--model` is for `--agent` runs only.
+- One terminal line per transition, as for `--agent`.
+
+Every transition writes a checkpoint (the task, the evidence so far, retry counts) in the same transaction, redacted like everything else in the run record. Interrupt a run with Ctrl-C and it stays open; resume re-enters the state that was running, and nothing is disposed:
+
+```bash
+agent-team run --workflow bug-fix --repo /path/to/target "Fix the crash on empty input."
+agent-team resume <run-id> --repo /path/to/target
+```
+
+Until build-order step 11 lands the implementer agent and the `test` and `pr` steps, `run --workflow bug-fix` refuses before recording anything and names what is missing.
+
 ## Environments
 
 Each run gets its own git worktree at `.agent-team/worktrees/<run-id>/` on branch `agent-team/<run-id>`, cut from `HEAD`. Gitignored files listed in `.worktreeinclude` (gitignore syntax, the same convention Claude Code uses) are copied in; tracked files, symlinks and `.agent-team/` never are. Each worktree gets a port slot, exported as `AGENT_TEAM_PORT_OFFSET` (slot × `ports.block_size`), so parallel dev servers do not collide.

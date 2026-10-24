@@ -5,18 +5,20 @@ first state. It refuses to create anything unless git already ignores
 `.agent-team/`, and it never writes outside that directory.
 """
 
+import json
 import secrets
 import shutil
 import sqlite3
 import subprocess
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, get_args
 
-from agent_team.runs.redact import redact_text, summarize_args
+from agent_team.runs.redact import redact_text, redact_value, summarize_args
 from agent_team.schemas.runs import (
+    Checkpoint,
     RunOutcome,
     RunRecord,
     RunState,
@@ -74,6 +76,9 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         """,
         "CREATE INDEX runs_started_at ON runs(started_at)",
     ),
+    # 2 (step 10): the orchestrator's checkpoint, written with the transition into
+    # the state it lets a run re-enter. Redacted JSON; NULL on every older row.
+    ("ALTER TABLE transitions ADD COLUMN checkpoint TEXT",),
 )
 
 SCHEMA_VERSION = len(MIGRATIONS)
@@ -224,6 +229,12 @@ class RunStore:
     def _clean(self, text: str | None) -> str | None:
         return None if text is None else redact_text(text, self._redaction)
 
+    def _checkpoint_json(self, data: Mapping[str, Any] | None) -> str | None:
+        if data is None:
+            return None
+        redacted = redact_value(dict(data), self._redaction)
+        return json.dumps(redacted, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
     # Writes
 
     def start_run(
@@ -234,8 +245,12 @@ class RunStore:
         worktree_path: str | None = None,
         run_id: str | None = None,
         initial_state: RunState = "INTAKE",
+        checkpoint: Mapping[str, Any] | None = None,
     ) -> RunRecord:
-        """Record a new run and its first transition (into `initial_state`) in one transaction."""
+        """Record a new run and its first transition (into `initial_state`) in one transaction.
+
+        `checkpoint` is what a resume needs to re-enter `initial_state`; it is stored redacted.
+        """
         now = self._clock()
         run_id = run_id or f"{now.astimezone(UTC):%Y%m%d-%H%M%S}-{secrets.token_hex(3)}"
         record = RunRecord(
@@ -255,13 +270,25 @@ class RunStore:
                 (run_id, workflow, model_class, worktree_path, initial_state, _ts(now), _ts(now)),
             )
             conn.execute(
-                "INSERT INTO transitions (run_id, seq, from_state, to_state, at, cost_usd) VALUES (?, 1, NULL, ?, ?, 0)",
-                (run_id, initial_state, _ts(now)),
+                "INSERT INTO transitions (run_id, seq, from_state, to_state, at, cost_usd, checkpoint)"
+                " VALUES (?, 1, NULL, ?, ?, 0, ?)",
+                (run_id, initial_state, _ts(now), self._checkpoint_json(checkpoint)),
             )
         return record
 
-    def transition(self, run_id: str, to_state: RunState, *, note: str | None = None) -> StateTransition:
-        """Move a run to `to_state`, stamping the time and the cost so far."""
+    def transition(
+        self,
+        run_id: str,
+        to_state: RunState,
+        *,
+        note: str | None = None,
+        checkpoint: Mapping[str, Any] | None = None,
+    ) -> StateTransition:
+        """Move a run to `to_state`, stamping the time and the cost so far.
+
+        A `checkpoint` is written in the same transaction, so a run is never in a
+        state it cannot be resumed into. It is stored redacted.
+        """
         now = self._clock()
         with self._tx() as conn:
             run = self._run_row(run_id)
@@ -279,8 +306,10 @@ class RunStore:
                 note=self._clean(note),
             )
             conn.execute(
-                "INSERT INTO transitions (run_id, seq, from_state, to_state, at, cost_usd, note) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (run_id, seq, run["state"], to_state, _ts(now), run["cost_usd"], transition.note),
+                "INSERT INTO transitions (run_id, seq, from_state, to_state, at, cost_usd, note, checkpoint)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (run_id, seq, run["state"], to_state, _ts(now), run["cost_usd"], transition.note,
+                 self._checkpoint_json(checkpoint)),
             )
             conn.execute(
                 "UPDATE runs SET state = ?, last_event_at = ? WHERE run_id = ?", (to_state, _ts(now), run_id)
@@ -413,6 +442,18 @@ class RunStore:
             )
             for row in rows
         ]
+
+    def last_checkpoint(self, run_id: str) -> Checkpoint | None:
+        """The newest checkpoint for a run, or None when it has none (a single-agent or pre-step-10 run)."""
+        self._run_row(run_id)
+        row = self._conn.execute(
+            "SELECT seq, to_state, checkpoint FROM transitions WHERE run_id = ? AND checkpoint IS NOT NULL"
+            " ORDER BY seq DESC LIMIT 1",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return Checkpoint(run_id=run_id, seq=row["seq"], state=row["to_state"], data=json.loads(row["checkpoint"]))
 
     def tool_calls(self, run_id: str) -> list[ToolCallRecord]:
         self._run_row(run_id)

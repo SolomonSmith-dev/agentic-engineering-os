@@ -10,9 +10,10 @@ from agent_team.adapters.claude.invoke import ClaudeVersionError
 from agent_team.canonical import validate_tree
 from agent_team.doctor import _which, build_report, render_table
 from agent_team.environments import AllocatorError, LockHeldError, sweep
+from agent_team.orchestrator import OrchestratorError, default_executor_factory, resume_workflow, run_workflow
 from agent_team.run_agent import RunAgentError, run_agent
 from agent_team.runs import RunStore, RunStoreError, UnknownRunError, render_run_list, render_trace
-from agent_team.schemas import SCHEMAS, json_schema
+from agent_team.schemas import SCHEMAS, RunRecord, json_schema
 
 app = typer.Typer(
     name="agent-team",
@@ -107,12 +108,36 @@ def trace(
         typer.echo(render_trace(run, store.transitions(run_id), store.tool_calls(run_id), show_calls=calls))
 
 
+# Errors that refuse a run with exit 2: something to fix before anything useful ran.
+REFUSALS = (RunAgentError, ClaudeVersionError, RunStoreError, AllocatorError, LockHeldError, OrchestratorError)
+
+
+def _claude_or_exit() -> str:
+    claude = _which("claude")
+    if claude is None:
+        typer.echo("error: claude is not on PATH; run 'agent-team doctor'", err=True)
+        raise typer.Exit(code=2)
+    return claude
+
+
+def _workflow_summary(record: RunRecord) -> None:
+    typer.echo(
+        f"{record.outcome}: workflow {record.workflow} ended in {record.state}, ${record.cost_usd:.4f}; "
+        f"details: agent-team trace {record.run_id}"
+    )
+    if record.outcome != "succeeded":
+        raise typer.Exit(code=1)
+
+
 @app.command()
 def run(
-    prompt: str | None = typer.Argument(None, help="The task for the agent; omit to read it from --prompt-file."),
-    agent: str = typer.Option(..., "--agent", "-a", help="Canonical agent to run, e.g. independent-reviewer."),
+    prompt: str | None = typer.Argument(None, help="The task; omit to read it from --prompt-file."),
+    agent: str | None = typer.Option(None, "--agent", "-a", help="Canonical agent to run, e.g. independent-reviewer."),
+    workflow: str | None = typer.Option(
+        None, "--workflow", "-w", help="Canonical workflow to run through the orchestrator, e.g. bug-fix."
+    ),
     model: str | None = typer.Option(
-        None, "--model", "-m", help="Override the agent's model class with this registry model id."
+        None, "--model", "-m", help="Override the agent's model class with this registry model id (--agent only)."
     ),
     prompt_file: Path | None = typer.Option(None, "--prompt-file", help="Read the prompt from this file."),
     repo: Path = typer.Option(Path("."), "--repo", "-C", help="Target repository; defaults to the current directory."),
@@ -120,11 +145,19 @@ def run(
     registry: Path | None = typer.Option(
         None, "--registry", help="Model registry; defaults to routing/registry.yaml next to --canonical."
     ),
-    budget: float = typer.Option(1.00, "--max-budget-usd", min=0.01, help="Stop the worker at this estimated spend."),
-    timeout: float = typer.Option(1800, "--timeout", min=1, help="Kill the worker after this many seconds."),
+    budget: float = typer.Option(
+        1.00, "--max-budget-usd", min=0.01, help="Stop each agent call at this estimated spend."
+    ),
+    timeout: float = typer.Option(1800, "--timeout", min=1, help="Kill each agent call after this many seconds."),
     test_command: list[str] = typer.Option([], "--test-command", help="Test command the agent may run (repeatable)."),
 ) -> None:
-    """Run one canonical agent in its own worktree and sandbox, and record everything it does."""
+    """Run one canonical agent (--agent) or a workflow (--workflow), and record everything it does."""
+    if (agent is None) == (workflow is None):
+        typer.echo("error: give exactly one of --agent or --workflow", err=True)
+        raise typer.Exit(code=2)
+    if workflow is not None and model is not None:
+        typer.echo("error: --model applies to --agent runs; a workflow resolves each agent's own model class", err=True)
+        raise typer.Exit(code=2)
     if (prompt is None) == (prompt_file is None):
         typer.echo("error: give the prompt as an argument or with --prompt-file, not both", err=True)
         raise typer.Exit(code=2)
@@ -133,15 +166,32 @@ def run(
     except (OSError, UnicodeDecodeError) as exc:
         typer.echo(f"error: cannot read --prompt-file {prompt_file}: {exc.strerror or exc}", err=True)
         raise typer.Exit(code=2) from exc
-    claude = _which("claude")
-    if claude is None:
-        typer.echo("error: claude is not on PATH; run 'agent-team doctor'", err=True)
-        raise typer.Exit(code=2)
+    claude = _claude_or_exit()
+    if workflow is not None:
+        factory = default_executor_factory(
+            repo=repo,
+            canonical_dir=canonical,
+            claude=claude,
+            max_budget_usd=budget,
+            timeout_s=timeout,
+            registry_path=registry,
+            test_commands=tuple(test_command),
+            echo=typer.echo,
+        )
+        try:
+            record = run_workflow(repo, canonical, workflow, text, executor_factory=factory, echo=typer.echo)
+        except REFUSALS as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
+        except KeyboardInterrupt as exc:
+            raise typer.Exit(code=130) from exc
+        _workflow_summary(record)
+        return
     try:
         record, result = run_agent(
             repo,
             canonical,
-            agent,
+            agent,  # type: ignore[arg-type]
             text,
             model=model,
             registry_path=registry,
@@ -151,7 +201,7 @@ def run(
             test_commands=tuple(test_command),
             echo=typer.echo,
         )
-    except (RunAgentError, ClaudeVersionError, RunStoreError, AllocatorError, LockHeldError) as exc:
+    except REFUSALS as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
     typer.echo(
@@ -166,6 +216,45 @@ def run(
         typer.echo(result.stderr_tail, err=True)
     if record.outcome != "succeeded":
         raise typer.Exit(code=1)
+
+
+@app.command()
+def resume(
+    run_id: str = typer.Argument(..., help="The interrupted workflow run to re-enter."),
+    repo: Path = typer.Option(Path("."), "--repo", "-C", help="Target repository; defaults to the current directory."),
+    canonical: Path = typer.Option(Path("canonical"), "--canonical", help="Directory holding the canonical files."),
+    registry: Path | None = typer.Option(
+        None, "--registry", help="Model registry; defaults to routing/registry.yaml next to --canonical."
+    ),
+    budget: float = typer.Option(
+        1.00, "--max-budget-usd", min=0.01, help="Stop each agent call at this estimated spend."
+    ),
+    timeout: float = typer.Option(1800, "--timeout", min=1, help="Kill each agent call after this many seconds."),
+    test_command: list[str] = typer.Option([], "--test-command", help="Test command the agent may run (repeatable)."),
+) -> None:
+    """Re-enter an interrupted workflow run at its last checkpoint; its worktrees were kept."""
+    claude = _claude_or_exit()
+    factory = default_executor_factory(
+        repo=repo,
+        canonical_dir=canonical,
+        claude=claude,
+        max_budget_usd=budget,
+        timeout_s=timeout,
+        registry_path=registry,
+        test_commands=tuple(test_command),
+        echo=typer.echo,
+    )
+    try:
+        record = resume_workflow(repo, canonical, run_id, executor_factory=factory, echo=typer.echo)
+    except UnknownRunError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    except REFUSALS as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    except KeyboardInterrupt as exc:
+        raise typer.Exit(code=130) from exc
+    _workflow_summary(record)
 
 
 env_app = typer.Typer(help="Manage the per-run worktree environments under .agent-team/.", no_args_is_help=True)

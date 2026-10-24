@@ -7,7 +7,7 @@ arguments are redacted and truncated before they are stored.
 """
 
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
@@ -85,3 +85,12 @@ class ToolCallRecord(RunModel):
     started_at: datetime
     duration_ms: int = Field(ge=0)
     cost_usd: float = Field(ge=0)
+
+
+class Checkpoint(RunModel):
+    """What the orchestrator needs to re-enter `state`: the task, evidence so far, retry counts."""
+
+    run_id: RunId
+    seq: int = Field(ge=1, description="The transition that wrote it.")
+    state: RunState
+    data: dict[str, Any]

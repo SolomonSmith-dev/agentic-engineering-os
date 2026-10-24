@@ -89,7 +89,7 @@ def test_empty_agent_body_fails(tree: Path) -> None:
 
 
 def test_bad_workflow_transition_fails(tree: Path) -> None:
-    _edit(tree / "workflows" / "bug-fix.yaml", "to: DONE", "to: SHIPPED")
+    _edit(tree / "workflows" / "bug-fix.yaml", "to: HUMAN_DECISION }", "to: SHIPPED }")
     report = validate_tree(tree)
     assert any(p.file.name == "bug-fix.yaml" and "SHIPPED" in p.message for p in report.problems)
 
