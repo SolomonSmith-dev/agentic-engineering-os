@@ -213,22 +213,23 @@ class DefaultExecutor:
 
     # --- the workflow worktree ------------------------------------------------------
 
-    def _writer_ceiling(self) -> Autonomy:
-        """The autonomy of the agents that commit in the workflow worktree, capped by policy and config."""
+    def _writer_ceiling(self, workflow: str) -> Autonomy:
+        """The autonomy of the workflow's agents that commit in its worktree, capped by policy and config."""
         policy = self.canonical.one("policy", self.policy_name).spec
+        names = {n.agent for n in self.canonical.one("workflow", workflow).spec.nodes.values() if n.agent}
         ceilings: list[Autonomy] = [
             requested_autonomy(d.spec.max_autonomy, policy.autonomy_ceiling.get(d.spec.name, policy.default_autonomy))
             for d in self.canonical.docs
-            if d.kind == "agent" and d.spec is not None and d.spec.workspace == "worktree"
+            if d.kind == "agent" and d.spec is not None and d.spec.name in names and d.spec.workspace == "worktree"
         ]
         config = self.repo_config()
         if config is not None:
             ceilings.append(config.autonomy_ceiling)
         return min(ceilings, key=lambda a: AUTONOMY_ORDER[a], default="A0")
 
-    def _workflow_env(self, run_id: str) -> Environment:
+    def _workflow_env(self, run_id: str, workflow: str) -> Environment:
         spec = self.canonical.one("environment", self.environment_name).spec
-        env, created = workflow_environment(self.root, run_id, spec, requested_autonomy=self._writer_ceiling())
+        env, created = workflow_environment(self.root, run_id, spec, requested_autonomy=self._writer_ceiling(workflow))
         if created:
             store = RunStore.open(self.root, create=False)
             if store is not None:
@@ -247,7 +248,7 @@ class DefaultExecutor:
         try:
             agent = self.canonical.one("agent", name).spec
             if agent.workspace == "worktree":
-                environment = self._workflow_env(given.run_id)
+                environment = self._workflow_env(given.run_id, given.workflow)
                 before = head_of(environment)
             elif isinstance(given.inputs.get("diff"), Mapping):
                 base_commit = given.inputs["diff"].get("head")
@@ -382,7 +383,7 @@ class DefaultExecutor:
         if not isinstance(diff, Mapping) or not diff.get("head"):
             return NodeResult(blocked="TEST needs the diff and the commit it ends at")
         try:
-            env = self._workflow_env(given.run_id)
+            env = self._workflow_env(given.run_id, given.workflow)
             head = head_of(env)
             if head != diff["head"]:
                 return NodeResult(blocked=f"the worktree is at {short(head)}, not the diffed {short(diff['head'])}")
@@ -424,7 +425,7 @@ class DefaultExecutor:
             note=_join(*notes),
         )
 
-    def _pr_refusals(self, env: Environment) -> list[str]:
+    def _pr_refusals(self, env: Environment, workflow: str) -> list[str]:
         """Why this run may not open a draft PR: capability, tool, autonomy, the approved proposal."""
         policy = self.canonical.one("policy", self.policy_name).spec
         problems = []
@@ -436,7 +437,7 @@ class DefaultExecutor:
             problems.append(f"no canonical cli tool implements {PR_CAPABILITY}")
         elif tool.implementation.command.split()[:3] != ["gh", "pr", "create"] or "--draft" not in tool.implementation.command.split():
             problems.append(f"the {PR_CAPABILITY} tool must be 'gh pr create --draft ...'")
-        ceiling = requested_autonomy(self._writer_ceiling(), env.autonomy_ceiling)
+        ceiling = requested_autonomy(self._writer_ceiling(workflow), env.autonomy_ceiling)
         if AUTONOMY_ORDER[ceiling] < AUTONOMY_ORDER[PR_AUTONOMY]:
             why = " (srt is absent)" if not env.sandbox.sandboxed else ""
             problems.append(f"{PR_CAPABILITY} needs {PR_AUTONOMY}; this run's ceiling is {ceiling}{why}")
@@ -476,12 +477,12 @@ class DefaultExecutor:
         if not head or tests.get("head") != head or review.get("head") != head:
             return no_pr("the diffed, tested and reviewed commits are not the same commit")
         try:
-            env = self._workflow_env(given.run_id)
+            env = self._workflow_env(given.run_id, given.workflow)
         except AllocatorError as exc:
             return no_pr(str(exc))
         if env.meta.branch != branch:
             return no_pr(f"the worktree is on {env.meta.branch}, not the run branch")
-        refusals = self._pr_refusals(env)
+        refusals = self._pr_refusals(env, given.workflow)
         if refusals:
             return no_pr("; ".join(refusals))
         failed = self._failed_gates(given)

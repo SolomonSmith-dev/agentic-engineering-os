@@ -10,6 +10,11 @@ instead: the model resolves for the codex runtime, the srt settings gain the
 compiled denyRead rules and the OpenAI hosts, and the transition note lists the
 capabilities Codex runs without.
 
+`after` (step 9) runs once the agent has succeeded and its tool calls are
+recorded, before the run is finished: still inside the run's lock, worktree
+and sandbox, so `inspect` can verify commands there and record them on the
+same run. If it raises, the run ends `failed`.
+
 The orchestrator (step 10) runs every agent node through here as a child run.
 Step 11 lets it hand over the worktree: `environment` runs the agent in the
 workflow's own worktree (the implementer, so every attempt commits on one
@@ -49,6 +54,21 @@ CODEX_AGENTS: tuple[str, ...] = ("independent-reviewer",)
 
 class RunAgentError(RuntimeError):
     """The run could not start; nothing was invoked. The message says what to fix."""
+
+
+@dataclass(frozen=True)
+class AgentRun:
+    """What an `after` callback gets: the open run, its environment and the agent's result."""
+
+    store: RunStore
+    run_id: str
+    root: Path
+    environment: Environment
+    policy: PolicySpec
+    result: AdapterResult
+
+
+AfterAgent = Callable[[AgentRun], None]
 
 
 @dataclass(frozen=True)
@@ -102,6 +122,7 @@ def run_agent(
     environment: Environment | None = None,
     base_commit: str | None = None,
     state: RunState | None = None,
+    after: AfterAgent | None = None,
     echo: Callable[[str], None] = print,
 ) -> tuple[RunRecord, AdapterResult]:
     """Run one agent against `repo` and return its run record and normalized result.
@@ -179,6 +200,8 @@ def run_agent(
                     codex=codex, prompt=prompt, max_budget_usd=max_budget_usd, timeout_s=timeout_s,
                     test_commands=test_commands, redaction=redaction, state=work_state, echo=echo,
                 )  # fmt: skip
+                if after is not None and result.status == "succeeded":
+                    after(AgentRun(store, run_id, root, environment, policy, result))
                 _finish(store, run_id, result, echo)
                 return store.get_run(run_id), result
             assert claude is not None
@@ -225,6 +248,8 @@ def run_agent(
             finally:
                 stderr_path.unlink(missing_ok=True)  # only the redacted tail is kept, in the result
             record(store, run_id, parser, result)
+            if after is not None and result.status == "succeeded":
+                after(AgentRun(store, run_id, root, environment, policy, result))
             _finish(store, run_id, result, echo)
         except BaseException as exc:
             if store.get_run(run_id).ended_at is None:

@@ -3,6 +3,7 @@ name: default
 autonomy_ceiling:
   independent-reviewer: A2
   implementer: A3 # branch, commit, draft PR; A3 also needs srt, or the run is capped at A2
+  repository-archaeologist: A0 # inspect: reads only; agent-team runs the detected commands itself
 protected_paths: [".env*", "~/.claude/**", ".agent-team/**"]
 denied_capabilities: [git.push.main, fs.write.home]
 redaction:

@@ -490,13 +490,15 @@ def write_policy(tmp_path: Path) -> dict:
         ("Edit", "~/.bashrc", True),
         ("Write", "escape/planted.py", True),
         ("Read", "/etc/hostname", False),
+        ("Write", ".git", True),
+        ("Edit", "sub/.git/config", True),
     ],
 )
 def test_hook_keeps_file_writes_inside_the_worktree(write_policy: dict, tool: str, path: str, blocked: bool) -> None:
     reason = check({"tool_name": tool, "tool_input": {"file_path": path}}, write_policy)
     assert (reason is not None) == blocked, reason
     if blocked:
-        assert "outside the run's worktree" in reason
+        assert "outside the run's worktree" in reason or "inside git's metadata" in reason
 
 
 def test_gh_and_git_credentials_are_protected_from_workers(tmp_path: Path) -> None:

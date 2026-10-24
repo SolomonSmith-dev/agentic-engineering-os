@@ -129,6 +129,10 @@ def check(event: dict[str, Any], policy: dict[str, Any]) -> str | None:
         for candidate in candidates:
             if not inside(candidate, Path(write_root), home):
                 return f"blocked by agent-team policy: {tool} writes {candidate!r}, outside the run's worktree"
+            if ".git" in Path(candidate).parts:
+                # The worktree's .git file names its gitdir; repointed, the orchestrator's own git
+                # (outside every sandbox) would read a config the agent wrote.
+                return f"blocked by agent-team policy: {tool} writes {candidate!r}, inside git's metadata"
     return None
 
 
