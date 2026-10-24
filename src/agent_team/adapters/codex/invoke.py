@@ -1,11 +1,12 @@
 """Invoke a compiled agent with `codex exec --json` and normalize what comes back (build-order step 12).
 
-Two auth modes, chosen from the environment, never read or stored by value:
+Auth mode is API key only, read from `CODEX_API_KEY`:
 
-- login (default): your ChatGPT sign-in, which Codex keeps under `$CODEX_HOME`
-  (`~/.codex`). `codex login status` exiting 0 is the only thing checked.
-- api_key: `CODEX_API_KEY` is set; `codex exec` reads it in preference to any
-  stored login. (`OPENAI_API_KEY` is not read by `codex exec` for auth.)
+- the key is passed to the `codex` process only, never persisted by value.
+- shell commands run with Codex's shell-environment excludes enabled.
+- `~/.codex/**`, and the caller's `CODEX_HOME` when set, can therefore stay
+  denied by srt for every command in the run. Codex itself gets an empty
+  `CODEX_HOME` in the run's temp directory.
 
 The session never loads your `config.toml` (`--ignore-user-config`), your or
 the repository's execpolicy rules (`--ignore-rules`), or writes a session file
@@ -49,14 +50,15 @@ RUNTIME = "codex"
 
 API_KEY_ENV = "CODEX_API_KEY"
 
-# CODEX_HOME names where Codex keeps its login; the location is passed, never what is in it.
-ENV_ALLOWLIST: tuple[str, ...] = (*CLAUDE_ENV_ALLOWLIST, "CODEX_HOME")
+ENV_ALLOWLIST: tuple[str, ...] = CLAUDE_ENV_ALLOWLIST
 
-# Hosts the srt allowlist needs for each auth mode: the API, or ChatGPT's backend and its token refresh.
-# unverified: that these are all the hosts a run reaches (read from the default base and refresh URLs).
+# CODEX_HOME for the run, under the run's temp dir; the caller's CODEX_HOME is never passed.
+CODEX_HOME_DIR = "codex-home"
+
+# Hosts the srt allowlist needs for Codex API-key auth.
+# unverified: that this is the full host list a run reaches.
 API_DOMAINS: dict[str, tuple[str, ...]] = {
     "api_key": ("api.openai.com",),
-    "login": ("chatgpt.com", "auth.openai.com"),
 }
 
 # Flags this adapter passes; `codex exec --help` must list every one, or the run is refused.
@@ -70,7 +72,7 @@ FLAG_KEYS: dict[str, str] = {"model": "--model", "sandbox_mode": "--sandbox"}
 
 PROBE_TIMEOUT_S = 30
 
-AuthMode = Literal["login", "api_key"]
+AuthMode = Literal["api_key"]
 
 
 class CodexUnavailableError(RuntimeError):
@@ -97,21 +99,14 @@ def check_flags(codex: str, base_env: dict[str, str]) -> None:
 
 
 def auth_mode(env: dict[str, str]) -> AuthMode:
-    return "api_key" if env.get(API_KEY_ENV, "").strip() else "login"
+    if env.get(API_KEY_ENV, "").strip():
+        return "api_key"
+    raise CodexUnavailableError(f"set {API_KEY_ENV} for this shell")
 
 
-def has_auth(codex: str, base_env: dict[str, str]) -> bool:
-    """True when `CODEX_API_KEY` is set or `codex login status` exits 0. Its output is discarded unread."""
-    if auth_mode(base_env) == "api_key":
-        return True
-    try:
-        out = subprocess.run(
-            [codex, "login", "status"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL, timeout=PROBE_TIMEOUT_S, check=False, env=_probe_env(base_env),
-        )  # fmt: skip
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return out.returncode == 0
+def has_auth(_codex: str, base_env: dict[str, str]) -> bool:
+    """True when `CODEX_API_KEY` is set (the runtime does not allow login-file auth)."""
+    return bool(base_env.get(API_KEY_ENV, "").strip())
 
 
 @dataclass(frozen=True)
@@ -139,11 +134,17 @@ def build_invocation(
     if compiled.schema_json is not None:
         argv += ["--output-schema", str(compiled.schema_json)]
     argv.append("-")  # the prompt comes in on stdin
-    # unverified: that Codex's own read-only sandbox (bubblewrap on Linux) starts inside srt's, and that
-    # Codex needs no write under $CODEX_HOME during an --ephemeral run (srt allows writes only in the run).
+    # unverified: that Codex's shell_environment_policy default excludes still strip CODEX_API_KEY from
+    # command_execution shells while keeping it available to codex exec itself.
     env = _probe_env(base_env)
     if mode == "api_key":
         env[API_KEY_ENV] = base_env[API_KEY_ENV]
+    # Codex gets an empty home of its own in the run's temp dir, so it never reaches for the denied ~/.codex.
+    # unverified: that codex exec starts with an empty CODEX_HOME when CODEX_API_KEY is set, and writes no
+    # copy of the key there (reviewer commands can read the run's temp dir).
+    codex_home = sandbox.tmp_dir / CODEX_HOME_DIR
+    codex_home.mkdir(parents=True, exist_ok=True)
+    env["CODEX_HOME"] = str(codex_home)
     return Invocation(argv=sandbox.wrap(argv), env=sandbox.env(env), mode=mode)
 
 
