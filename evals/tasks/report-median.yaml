@@ -1,0 +1,18 @@
+# Symptom only: the median in report/stats.py, behind the reader and the renderer.
+id: report-median
+kind: locate-bug
+repo: fixture:report-median
+ref: 522f269c0cfaac95cd6dcc9e5483efb0dd4b2d8b # the commit the fixture materializes to; a changed fixture is refused
+instruction: "The report prints the wrong median when a column has an even number of values: for a column with the values 1, 2, 3 and 4 it prints a median of 3, but it should be 2.5. Find the cause and fix it."
+test_command: python3 -m unittest
+existing_tests:
+  - python3 -m unittest tests.test_report.ReportTest.test_reader_skips_blanks
+  - python3 -m unittest tests.test_report.ReportTest.test_mean
+  - python3 -m unittest tests.test_report.ReportTest.test_render_odd_column
+planned_files:
+  - report/stats.py
+  - tests/** # a regression test is planned work
+verifier: # hidden: copied over the agent's tree only after the arm ends
+  command: python3 -m unittest tests.test_hidden_median
+  files: ../fixtures/report-median/verifier
+  timeout_s: 120

@@ -58,6 +58,7 @@ from agent_team.orchestrator.workspace import (
 )
 from agent_team.run_agent import Canonical, RunAgentError, requested_autonomy, run_agent
 from agent_team.runs.store import STATE_DIR, RunStore, repo_root
+from agent_team.schemas.adapter import AdapterResult
 from agent_team.schemas.bootstrap import RepoConfig
 from agent_team.schemas.common import AUTONOMY_ORDER, Autonomy
 
@@ -156,6 +157,8 @@ class DefaultExecutor:
     policy_name: str = "default"
     environment_name: str = "default"
     echo: Echo = print
+    # Called with each agent node's normalized result (the eval reads token counts from it, step 13).
+    observe: Callable[[str, AdapterResult], None] | None = None
     _config: RepoConfig | None = field(default=None, init=False, repr=False)
     _config_read: bool = field(default=False, init=False, repr=False)
 
@@ -280,6 +283,8 @@ class DefaultExecutor:
             return NodeResult(blocked=f"agent {name}: {exc}")
         finally:
             acquire(state_dir, given.run_id)
+        if self.observe is not None:
+            self.observe(name, result)
         note = f"agent {name} run {child.run_id}: {result.status}"
         if result.status != "succeeded":
             return NodeResult(cost_usd=result.cost_usd, note=note, blocked=f"agent {name} did not succeed")

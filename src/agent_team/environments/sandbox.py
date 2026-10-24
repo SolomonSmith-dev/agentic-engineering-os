@@ -55,13 +55,14 @@ def build_settings(
     spec: EnvironmentSpec, *, run_id: str, worktree: Path, git_dir: Path, tmp_dir: Path, home: Path
 ) -> dict[str, object]:
     """srt settings for one run. Every path is absolute."""
+    extra = [str(home / p[2:]) if p.startswith("~/") else p for p in spec.deny_read]
     return {
         "network": {
             "allowedDomains": list(spec.network.allowed_domains),
             "deniedDomains": [],
         },
         "filesystem": {
-            "denyRead": [str(home / name) for name in DENY_READ_HOME],
+            "denyRead": [*(str(home / name) for name in DENY_READ_HOME), *extra],
             "allowWrite": [str(worktree), str(tmp_dir), *(str(p) for p in git_write_paths(git_dir, run_id))],
             "denyWrite": [str(worktree / ".git")],
         },
