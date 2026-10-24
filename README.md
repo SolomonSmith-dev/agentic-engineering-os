@@ -2,7 +2,7 @@
 
 `agent-team` runs Claude Code workers and an independent reviewer inside sandboxed git worktrees, records every run in SQLite, and gates pull requests on the reviewer's verdict.
 
-Status: build-order step 5 of 15. The CLI answers `--version`, checks the host (`agent-team doctor`), reads the run record (`agent-team trace`), sweeps stale run worktrees (`agent-team env sweep`), validates `canonical/` against the pydantic schemas (`agent-team validate`) and exports them as JSON Schema (`agent-team schema export`). See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the target design and build order.
+Status: build-order step 6 of 15, version 0.1.0. The CLI answers `--version`, checks the host (`agent-team doctor`), runs one canonical agent end to end (`agent-team run --agent`), reads the run record (`agent-team trace`), sweeps stale run worktrees (`agent-team env sweep`), validates `canonical/` against the pydantic schemas (`agent-team validate`) and exports them as JSON Schema (`agent-team schema export`). See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the target design and build order.
 
 ## Install
 
@@ -11,7 +11,7 @@ uv tool install git+https://github.com/SolomonSmith-dev/agentic-engineering-os
 agent-team --version
 ```
 
-Pin to a tag once one exists (`@0.1.0` lands after build-order step 6).
+Pin to a tag: `uv tool install git+https://github.com/SolomonSmith-dev/agentic-engineering-os@0.1.0`.
 
 ## Doctor
 
@@ -32,7 +32,25 @@ agent-team trace <run-id>        # state transitions with elapsed time and cost
 agent-team trace <run-id> --calls
 ```
 
-No agent writes to the record yet; the runtime adapter (build-order step 6) is its first writer.
+`agent-team run` is its first writer.
+
+## Run one agent
+
+`agent-team run` runs one canonical agent against a target repository: it records the run, takes the repository lock, allocates a worktree and sandbox, compiles the agent for Claude Code, runs `claude -p` headless, and writes every tool call, the cost and the outcome to the run record.
+
+```bash
+agent-team run --agent independent-reviewer --model claude-opus-5-5 \
+  --repo /path/to/target --canonical ~/Projects/agentic-engineering-os/canonical \
+  --test-command "uv run pytest" --max-budget-usd 1.00 \
+  --prompt-file review-request.md
+```
+
+- Compiled files go to `.agent-team/compiled/<run-id>/` (`agents.json`, `settings.json`, `policy.json`, the native `agents/<name>.md`, and the output schema) and reach Claude Code only through flags. Nothing is written into the target repository's `.claude/`.
+- Capabilities compile to permission rules in `dontAsk` mode: a call no rule allows is denied. Capabilities above the run's autonomy ceiling are dropped and listed in the run record.
+- A `PreToolUse` hook blocks any tool call that names a protected path (`.env*`, `*.pem`, `~/.ssh`, `~/.aws`, the policy's own list), including through Bash. It fails closed.
+- With your Claude login the worker runs with `--setting-sources ""`, so hooks and settings checked into the target repository never load. With `ANTHROPIC_API_KEY` set (CI) it runs with `--bare`.
+- The worker gets a scrubbed environment and the prompt on stdin. An agent whose output has a schema (the reviewer's verdict) must return valid structured output, or the run fails.
+- `--model` is required until the model registry (build-order step 7) resolves model classes.
 
 ## Environments
 

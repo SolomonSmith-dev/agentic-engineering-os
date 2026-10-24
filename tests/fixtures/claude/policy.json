@@ -1,0 +1,17 @@
+{
+  "protected_paths": [
+    ".env",
+    ".env.*",
+    "~/.claude/**",
+    ".agent-team/**",
+    "*.pem",
+    "~/.ssh/**",
+    "~/.aws/**",
+    "~/.config/gcloud/**"
+  ],
+  "roots": [
+    "<TMP>/worktree",
+    "<TMP>/repo"
+  ],
+  "home": "<TMP>/home"
+}

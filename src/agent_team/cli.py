@@ -6,9 +6,11 @@ from pathlib import Path
 import typer
 
 from agent_team import __version__
+from agent_team.adapters.claude.invoke import ClaudeVersionError
 from agent_team.canonical import validate_tree
-from agent_team.doctor import build_report, render_table
-from agent_team.environments import AllocatorError, sweep
+from agent_team.doctor import _which, build_report, render_table
+from agent_team.environments import AllocatorError, LockHeldError, sweep
+from agent_team.run_agent import RunAgentError, run_agent
 from agent_team.runs import RunStore, RunStoreError, UnknownRunError, render_run_list, render_trace
 from agent_team.schemas import SCHEMAS, json_schema
 
@@ -103,6 +105,57 @@ def trace(
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(code=1) from exc
         typer.echo(render_trace(run, store.transitions(run_id), store.tool_calls(run_id), show_calls=calls))
+
+
+@app.command()
+def run(
+    prompt: str | None = typer.Argument(None, help="The task for the agent; omit to read it from --prompt-file."),
+    agent: str = typer.Option(..., "--agent", "-a", help="Canonical agent to run, e.g. independent-reviewer."),
+    model: str = typer.Option(..., "--model", "-m", help="Model id until the registry (step 7) resolves model classes."),
+    prompt_file: Path | None = typer.Option(None, "--prompt-file", help="Read the prompt from this file."),
+    repo: Path = typer.Option(Path("."), "--repo", "-C", help="Target repository; defaults to the current directory."),
+    canonical: Path = typer.Option(Path("canonical"), "--canonical", help="Directory holding the canonical files."),
+    budget: float = typer.Option(1.00, "--max-budget-usd", min=0.01, help="Stop the worker at this estimated spend."),
+    timeout: float = typer.Option(1800, "--timeout", min=1, help="Kill the worker after this many seconds."),
+    test_command: list[str] = typer.Option([], "--test-command", help="Test command the agent may run (repeatable)."),
+) -> None:
+    """Run one canonical agent in its own worktree and sandbox, and record everything it does."""
+    if (prompt is None) == (prompt_file is None):
+        typer.echo("error: give the prompt as an argument or with --prompt-file, not both", err=True)
+        raise typer.Exit(code=2)
+    text = prompt if prompt is not None else prompt_file.read_text(encoding="utf-8")  # type: ignore[union-attr]
+    claude = _which("claude")
+    if claude is None:
+        typer.echo("error: claude is not on PATH; run 'agent-team doctor'", err=True)
+        raise typer.Exit(code=2)
+    try:
+        record, result = run_agent(
+            repo,
+            canonical,
+            agent,
+            text,
+            model=model,
+            claude=claude,
+            max_budget_usd=budget,
+            timeout_s=timeout,
+            test_commands=tuple(test_command),
+            echo=typer.echo,
+        )
+    except (RunAgentError, ClaudeVersionError, RunStoreError, AllocatorError, LockHeldError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(
+        f"{record.outcome}: {result.status} in {result.num_turns or 0} turn(s), "
+        f"{result.tool_calls} tool call(s), ${result.cost_usd:.4f}"
+    )
+    if result.structured_output is not None:
+        typer.echo(json.dumps(result.structured_output, indent=2))
+    elif result.result:
+        typer.echo(result.result)
+    if result.stderr_tail:
+        typer.echo(result.stderr_tail, err=True)
+    if record.outcome != "succeeded":
+        raise typer.Exit(code=1)
 
 
 env_app = typer.Typer(help="Manage the per-run worktree environments under .agent-team/.", no_args_is_help=True)

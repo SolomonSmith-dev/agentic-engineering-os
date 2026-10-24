@@ -1,6 +1,6 @@
 [project]
 name = "agent-team"
-version = "0.0.1"
+version = "0.1.0"
 description = "Agentic engineering OS: an agent-team CLI that runs Claude Code workers and an independent reviewer in sandboxed git worktrees."
 readme = "README.md"
 license = "Apache-2.0"

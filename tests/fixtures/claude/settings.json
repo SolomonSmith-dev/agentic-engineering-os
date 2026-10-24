@@ -1,0 +1,69 @@
+{
+  "permissions": {
+    "defaultMode": "dontAsk",
+    "allow": [
+      "Read",
+      "Glob",
+      "Grep",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git show *)",
+      "Bash(git blame *)",
+      "Bash(ls *)",
+      "Bash(pwd)",
+      "Bash(wc *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(uv run pytest)",
+      "Bash(uv run pytest *)"
+    ],
+    "deny": [
+      "WebFetch",
+      "WebSearch",
+      "Bash(git push *)",
+      "Bash(git branch -d *)",
+      "Bash(git branch -D *)",
+      "Bash(git reset --hard *)",
+      "Bash(git config *)",
+      "Edit",
+      "Write",
+      "NotebookEdit",
+      "Bash(git commit *)",
+      "Bash(git add *)",
+      "Read(**/.env)",
+      "Edit(**/.env)",
+      "Read(**/.env.*)",
+      "Edit(**/.env.*)",
+      "Read(~/.claude/**)",
+      "Edit(~/.claude/**)",
+      "Read(./.agent-team/**)",
+      "Edit(./.agent-team/**)",
+      "Read(**/*.pem)",
+      "Edit(**/*.pem)",
+      "Read(~/.ssh/**)",
+      "Edit(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Edit(~/.aws/**)",
+      "Read(~/.config/gcloud/**)",
+      "Edit(~/.config/gcloud/**)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<PYTHON> -m agent_team.adapters.claude.hook <TMP>/compiled/policy.json"
+          }
+        ]
+      }
+    ]
+  },
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  }
+}
