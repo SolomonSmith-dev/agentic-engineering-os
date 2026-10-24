@@ -14,6 +14,7 @@ from agent_team.bootstrap import BootstrapError, apply_plan, plan_configure, ren
 from agent_team.canonical import validate_tree
 from agent_team.doctor import _which, build_report, render_table
 from agent_team.environments import AllocatorError, LockHeldError, sweep
+from agent_team.memory import DEFAULT_COMMAND_TIMEOUT_S, MEMORY_DIR, InspectError, inspect_repo, render_memory_summary
 from agent_team.orchestrator import OrchestratorError, default_executor_factory, resume_workflow, run_workflow
 from agent_team.run_agent import RunAgentError, run_agent
 from agent_team.runs import RunStore, RunStoreError, UnknownRunError, render_run_list, render_trace
@@ -341,6 +342,62 @@ def resume(
     except KeyboardInterrupt as exc:
         raise typer.Exit(code=130) from exc
     _workflow_summary(record)
+
+
+@app.command("inspect")
+def inspect_cmd(
+    repo: Path = typer.Argument(Path("."), help="Target repository; defaults to the current directory."),
+    summary: bool = typer.Option(
+        False, "--summary", help="Print the stored map and every command's verification result; run nothing."
+    ),
+    canonical: Path = typer.Option(Path("canonical"), "--canonical", help="Directory holding the canonical files."),
+    registry: Path | None = typer.Option(
+        None, "--registry", help="Model registry; defaults to routing/registry.yaml next to --canonical."
+    ),
+    budget: float = typer.Option(1.00, "--max-budget-usd", min=0.01, help="Stop the archaeologist at this estimated spend."),
+    timeout: float = typer.Option(1800, "--timeout", min=1, help="Kill the archaeologist after this many seconds."),
+    command_timeout: float = typer.Option(
+        DEFAULT_COMMAND_TIMEOUT_S, "--command-timeout", min=1, help="Kill each verified command after this many seconds."
+    ),
+) -> None:
+    """Map the repository at A0 into .agent-team/memory/repo/ and verify init's commands inside srt."""
+    if summary:
+        try:
+            typer.echo(render_memory_summary(repo))
+        except (InspectError, RunStoreError) as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        return
+    claude = _claude_or_exit()
+    try:
+        outcome = inspect_repo(
+            repo,
+            canonical,
+            claude=claude,
+            registry_path=registry,
+            max_budget_usd=budget,
+            timeout_s=timeout,
+            command_timeout_s=command_timeout,
+            echo=typer.echo,
+        )
+    except (*REFUSALS, BootstrapError, InspectError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    record, result = outcome.record, outcome.result
+    typer.echo(
+        f"{record.outcome}: {result.status} in {result.num_turns or 0} turn(s), "
+        f"{result.tool_calls} tool call(s), ${result.cost_usd:.4f}; details: agent-team trace {record.run_id} --calls"
+    )
+    if record.outcome != "succeeded":
+        if result.structured_output_error:
+            typer.echo(result.structured_output_error, err=True)
+        if result.stderr_tail:
+            typer.echo(result.stderr_tail, err=True)
+        raise typer.Exit(code=1)
+    for path in outcome.written:
+        typer.echo(f"wrote {MEMORY_DIR / path.name}")
+    typer.echo("")
+    typer.echo(render_memory_summary(repo))
 
 
 env_app = typer.Typer(help="Manage the per-run worktree environments under .agent-team/.", no_args_is_help=True)

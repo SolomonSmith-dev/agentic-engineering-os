@@ -3,7 +3,8 @@
 `AdapterResult` is runtime-neutral: the Claude adapter (step 6) and the Codex
 adapter (step 12) fill the same shape. `OUTPUT_SCHEMAS` maps an agent
 output name to the model its structured output must validate against; the
-adapter passes that model's JSON Schema to the runtime.
+adapter passes that model's JSON Schema to the runtime. Registered so far: the
+reviewer's verdict (step 6) and the archaeologist's repository memory (step 9).
 """
 
 from typing import Any, Literal
@@ -58,6 +59,59 @@ class ReviewVerdict(BaseModel):
     findings: list[ReviewFinding] = Field(default_factory=list)
 
 
+class MemoryModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ModuleEntry(MemoryModel):
+    path: str = Field(min_length=1, description="Path of the module or package, relative to the repository root.")
+    purpose: str = Field(min_length=1)
+    depends_on: list[str] = Field(default_factory=list, description="Paths of the other modules it imports or calls.")
+
+
+class ArchitectureMap(MemoryModel):
+    summary: str = Field(min_length=1, description="What the repository is and how it is laid out, in a few sentences.")
+    modules: list[ModuleEntry] = Field(min_length=1)
+
+
+class ModuleOwnership(MemoryModel):
+    path: str = Field(min_length=1)
+    owners: list[str] = Field(default_factory=list)
+    source: Literal["codeowners", "git-history", "unknown"]
+
+
+DeclaredCommandKind = Literal["build", "test", "lint", "typecheck", "format", "run", "other"]
+
+
+class DeclaredCommand(MemoryModel):
+    kind: DeclaredCommandKind
+    command: str = Field(min_length=1)
+    source: str = Field(min_length=1, description="The file that declares it, e.g. Makefile or package.json.")
+
+
+class Convention(MemoryModel):
+    topic: str = Field(min_length=1)
+    rule: str = Field(min_length=1)
+    evidence: str = Field(min_length=1, description="The file that shows the convention.")
+
+
+class Pitfall(MemoryModel):
+    title: str = Field(min_length=1)
+    detail: str = Field(min_length=1)
+    evidence: str = Field(min_length=1, description="The file that shows the pitfall.")
+
+
+class RepositoryMemory(MemoryModel):
+    """The repository archaeologist's output; `agent-team inspect` writes it as repository memory."""
+
+    architecture: ArchitectureMap
+    ownership: list[ModuleOwnership] = Field(default_factory=list)
+    commands: list[DeclaredCommand] = Field(default_factory=list)
+    conventions: list[Convention] = Field(default_factory=list)
+    pitfalls: list[Pitfall] = Field(default_factory=list)
+
+
 OUTPUT_SCHEMAS: dict[str, type[BaseModel]] = {
     "review_verdict": ReviewVerdict,
+    "repository_memory": RepositoryMemory,
 }

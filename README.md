@@ -38,6 +38,33 @@ agent-team configure /path/to/repo --canonical ~/Projects/agentic-engineering-os
 
 `agent-team configure <repo>` turns the approved proposal into `.agent-team/config.yaml` (verified commands by kind, which later steps use as the test, lint and type-check gates) and compiles runtime files: a marked block (`<!-- agent-team:begin -->` to `<!-- agent-team:end -->`) appended to `CLAUDE.md` and to `AGENTS.md` if it exists, and each canonical agent as `.claude/agents/<name>.md`. It prints a unified diff of every file it will write and asks before writing; `--yes` skips the question and `--dry-run` only shows the diff (it works before approval). Text outside the block is never changed; a re-run updates the block in place and writes nothing when nothing changed. A `CLAUDE.md` that imports `@AGENTS.md` is left alone. An agent file it did not write, a file with the same agent name under `.github/agents/`, and any path that is or sits under a symlink are left untouched and reported. It never writes `.claude/settings.json`. This is the only command that writes a target repository's `.claude/`.
 
+## Inspect: repository memory
+
+`agent-team inspect <repo>` runs the `repository-archaeologist` agent at A0 through the same path as `agent-team run --agent`. The agent only reads: files, `git log` and friends, `ls`. Its structured output (architecture map, module ownership, commands, conventions, pitfalls) comes back to agent-team, and agent-team writes it as repository memory:
+
+```text
+.agent-team/memory/repo/
+  index.yaml          run id, base commit, whether srt was used, command counts by status
+  architecture.yaml   summary and one entry per module (path, purpose, depends_on)
+  ownership.yaml      owners per module, from CODEOWNERS or git history
+  commands.yaml       every command and its verification result
+  conventions.yaml    rules the code follows, each citing a file
+  pitfalls.yaml       things that will bite, each citing a file
+```
+
+```bash
+agent-team init /path/to/repo                      # inspect reads the commands init detected
+agent-team inspect /path/to/repo --canonical ~/Projects/agentic-engineering-os/canonical
+agent-team inspect /path/to/repo --summary         # the map and every command's result; runs nothing
+```
+
+- It refuses unless git ignores `.agent-team/`, and unless `init` has run (it reads `.agent-team/config.yaml` when `configure` wrote one, otherwise `.agent-team/proposal.yaml`). It writes nothing outside `.agent-team/`; inside it, only what every `run --agent` writes (run record, worktree, compiled files) plus the memory files.
+- After the agent succeeds, agent-team runs each command `init` detected, in order, inside the run's srt sandbox and worktree: no network beyond the environment allowlist, writes only in the worktree and the run's temp directory, and no reads of the policy's protected paths (`.env*`, `~/.claude`, the rest of `.agent-team/`, and the defaults). Each command gets a scrubbed environment with `CI=1`, no stdin, and `--command-timeout` seconds (600 by default) before its process group is killed. Only a redacted tail of its output is kept.
+- Each command lands in `commands.yaml` as `passed` (exit 0), `failed`, `timeout` or `unverified`, with its exit code and duration, and in the run record as an `inspect.verify` tool call (`agent-team trace <run-id> --calls`).
+- Without srt nothing from the repository runs: every command is `unverified`, with the reason. Commands only the archaeologist found are listed `unverified` too and never run; what runs comes from `init`'s discovery, not from a model that read the repository.
+- Commands run in a worktree cut from `HEAD`, so gitignored dependencies (`.venv/`, `node_modules/`) are missing unless `.worktreeinclude` copies them; a command init marked ✓ can fail here for that reason.
+- The archaeologist's output is redacted through the policy before it is written. Re-running `inspect` replaces the memory files.
+
 ## Run record and trace
 
 Every run is recorded in `.agent-team/runs.db` inside the target repository: one row per run (state, start and end time, cost so far, model class, worktree, outcome), one per state transition, and one per tool call (tool, redacted argument summary, result, duration, cost). The store refuses to open unless git already ignores `.agent-team/`, and it writes nothing outside that directory. Tool-call arguments are redacted and truncated before they are stored.
