@@ -1,0 +1,64 @@
+# agent-team proposal: what `agent-team init` found, and the ask under `ask:`.
+# Edit anything, set ask.approved: true, then run `agent-team configure`.
+# verified: true (✓) means the command's tool and target were found; nothing was run.
+version: 1
+vcs:
+  host: github
+  remote: github.com/acme/widgets
+  default_branch: main
+  default_branch_source: local branch
+  protected_branches: unknown
+  protected_branches_source: not discoverable without an authenticated API call
+ci:
+  systems:
+  - github-actions
+  files:
+  - .github/workflows/ci.yml
+commands:
+- kind: build
+  command: uv build
+  source: pyproject.toml ([build-system])
+  verified: true
+  check: uv on PATH
+- kind: test
+  command: uv run pytest
+  source: pyproject.toml (pytest configured or a dependency)
+  verified: true
+  check: uv on PATH; pytest in .venv
+- kind: lint
+  command: uv run ruff check .
+  source: pyproject.toml (ruff configured or a dependency)
+  verified: false
+  check: ruff not in .venv (dependencies not installed here)
+- kind: typecheck
+  command: uv run mypy .
+  source: pyproject.toml (mypy configured or a dependency)
+  verified: false
+  check: mypy not in .venv (dependencies not installed here)
+instruction_files:
+- CLAUDE.md
+mcp_configs:
+- path: .mcp.json
+  servers:
+  - github
+secrets:
+- path: .env
+  kind: env-file
+  tracked: false
+- path: .env.example
+  kind: env-template
+  tracked: true
+- path: .github/workflows/ci.yml
+  kind: github-actions-secrets
+  tracked: true
+devcontainer:
+- .devcontainer/devcontainer.json
+codeowners: .github/CODEOWNERS
+ask:
+  runtimes:
+  - claude
+  privacy_classes:
+  - vendor-cloud
+  autonomy_ceiling: A3
+  draft_prs: true
+  approved: false
