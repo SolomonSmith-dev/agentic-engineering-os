@@ -1,0 +1,15 @@
+kind: environment
+name: default
+description: Git worktree per run under .agent-team/worktrees/, wrapped in srt with deny-all network plus this allowlist.
+tier: srt
+network:
+  allowed_domains:
+    - api.anthropic.com
+    - github.com
+    - "*.github.com"
+    - "*.githubusercontent.com"
+    - pypi.org
+    - files.pythonhosted.org
+    - registry.npmjs.org
+ports:
+  block_size: 100

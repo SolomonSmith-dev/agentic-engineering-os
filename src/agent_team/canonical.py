@@ -7,6 +7,7 @@ Layout (section 6 of docs/ARCHITECTURE.md):
     canonical/workflows/*.yaml
     canonical/tools/*.yaml
     canonical/policies/*.yaml
+    canonical/environments/*.yaml
 
 Every problem is reported as a `Problem(file, field, message)` so the caller
 can print `path: field: message` and the user knows exactly what to fix.
@@ -32,6 +33,7 @@ LAYOUT: dict[str, tuple[str, str]] = {
     "workflows": ("workflow", "*.yaml"),
     "tools": ("tool", "*.yaml"),
     "policies": ("policy", "*.yaml"),
+    "environments": ("environment", "*.yaml"),
 }
 
 BODY_REQUIRED = {"agent", "skill"}

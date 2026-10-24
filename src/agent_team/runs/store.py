@@ -327,6 +327,15 @@ class RunStore:
             )
         return record
 
+    def set_worktree_path(self, run_id: str, worktree_path: str) -> None:
+        """Record the worktree the environment allocator gave this run."""
+        with self._tx() as conn:
+            self._run_row(run_id)
+            conn.execute(
+                "UPDATE runs SET worktree_path = ?, last_event_at = ? WHERE run_id = ?",
+                (worktree_path, _ts(self._clock()), run_id),
+            )
+
     def add_cost(self, run_id: str, cost_usd: float) -> None:
         """Add model cost that no single tool call carries (the adapter's normalized total)."""
         if cost_usd < 0:

@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from agent_team.schemas.agent import AgentSpec, Capabilities
 from agent_team.schemas.doctor import DoctorReport
+from agent_team.schemas.environment import EnvironmentSpec, NetworkPolicy, PortPolicy
 from agent_team.schemas.policy import PolicySpec, RedactionRule
 from agent_team.schemas.runs import (
     RunOutcome,
@@ -29,6 +30,7 @@ SCHEMAS: dict[str, type[BaseModel]] = {
     "workflow": WorkflowSpec,
     "tool": ToolSpec,
     "policy": PolicySpec,
+    "environment": EnvironmentSpec,
 }
 
 SCHEMA_ID_BASE = "https://github.com/SolomonSmith-dev/agentic-engineering-os/schemas"
@@ -48,8 +50,11 @@ __all__ = [
     "AgentSpec",
     "Capabilities",
     "DoctorReport",
+    "EnvironmentSpec",
     "Implementation",
+    "NetworkPolicy",
     "PolicySpec",
+    "PortPolicy",
     "RedactionRule",
     "RunOutcome",
     "RunRecord",

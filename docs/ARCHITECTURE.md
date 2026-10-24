@@ -132,7 +132,7 @@ escalate_when: [unresolved_security_finding, requirement_unmapped]
 | `canonical/tools/*.yaml` | capability name → implementation (CLI, API, MCP server, local service), credential handle | permission allow/deny rules per runtime; MCP config; gateway routes |
 | `canonical/policies/*.yaml` | autonomy ceiling per agent, protected paths, redaction rules, required gates | Claude hooks (`PreToolUse` exit 2), Codex `[permissions]`, Copilot repository rules, orchestrator checks |
 | `routing/registry.yaml` | model entries (provider, capabilities, cost, privacy class, fallbacks) and class → model resolution | per-agent `model` fields; LiteLLM config |
-| `environments/*.yaml` | cwd, worktree, srt, docker, devcontainer, remote host, CI | orchestrator allocator |
+| `canonical/environments/*.yaml` | isolation tier (worktree, srt; later docker, devcontainer, remote host, CI), network allowlist, port block per worktree | orchestrator allocator; `srt` settings per run |
 | `evals/tasks/*.yaml` | Harbor-shaped task: repo, ref, instruction, verifier command | Harbor dataset; mini-swe-agent baseline run |
 
 The five concerns stay separate by construction: an agent names a `model_class`, not a model; a skill is a directory, not an agent; a tool is a capability name, not a permission; the runtime and the environment are chosen by the orchestrator at run time and never appear in an agent file.
