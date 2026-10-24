@@ -33,7 +33,7 @@ from agent_team.adapters.codex import (
     srt_deny_read,
     strict_schema,
 )
-from agent_team.adapters.codex.invoke import Invocation, check_flags, execute, has_auth
+from agent_team.adapters.codex.invoke import CodexUnavailableError, Invocation, check_flags, execute, has_auth
 from agent_team.canonical import parse_file
 from agent_team.cli import app
 from agent_team.environments import srt_path
@@ -195,19 +195,19 @@ BASE_ENV = {
     "PATH": "/usr/bin",
     "HOME": "/home/u",
     "LANG": "C.UTF-8",
-    "CODEX_HOME": "/home/u/.codex",
     "GH_TOKEN": "ghp_INVOKECANARY0000000000",
     "OPENAI_API_KEY": "sk-proj-NOTPASSEDCANARY000000000",
     "CLAUDE_CODE_SESSION_ID": "parent-session",
 }
 
 
-def test_login_mode_argv_and_scrubbed_env(tmp_path: Path) -> None:
+def test_api_key_mode_argv_and_scrubbed_env(tmp_path: Path) -> None:
     sandbox = Sandbox(srt=None, settings_path=None, tmp_dir=tmp_path / "t", port_offset=100)
     compiled = _compiled(tmp_path)
-    inv = build_invocation(compiled, codex="/bin/codex", sandbox=sandbox, base_env=BASE_ENV, cwd=tmp_path / "wt")
+    env = {**BASE_ENV, "CODEX_API_KEY": "sk-proj-CODEXKEYCANARY00000000"}
+    inv = build_invocation(compiled, codex="/bin/codex", sandbox=sandbox, base_env=env, cwd=tmp_path / "wt")
     argv = inv.argv
-    assert inv.mode == "login"
+    assert inv.mode == "api_key"
     assert argv[:2] == ["/bin/codex", "exec"] and argv[-1] == "-", "the prompt comes in on stdin"
     for flag in ("--json", "--ignore-user-config", "--ignore-rules", "--ephemeral"):
         assert flag in argv
@@ -220,8 +220,19 @@ def test_login_mode_argv_and_scrubbed_env(tmp_path: Path) -> None:
     [instructions] = [c for c in configs if c.startswith("developer_instructions=")]
     assert tomllib.loads(instructions)["developer_instructions"] == compiled.overrides["developer_instructions"]
     assert "--dangerously-bypass-approvals-and-sandbox" not in argv and "danger-full-access" not in argv
-    assert inv.env == {"PATH": "/usr/bin", "HOME": "/home/u", "LANG": "C.UTF-8", "CODEX_HOME": "/home/u/.codex",
+    assert inv.env == {"PATH": "/usr/bin", "HOME": "/home/u", "LANG": "C.UTF-8", "CODEX_API_KEY": env["CODEX_API_KEY"],
                        "TMPDIR": str(tmp_path / "t"), "AGENT_TEAM_PORT_OFFSET": "100"}  # fmt: skip
+
+
+def test_build_invocation_requires_codex_api_key(tmp_path: Path) -> None:
+    with pytest.raises(CodexUnavailableError, match="set CODEX_API_KEY"):
+        build_invocation(
+            _compiled(tmp_path),
+            codex="/bin/codex",
+            sandbox=Sandbox(srt=None, settings_path=None, tmp_dir=tmp_path / "t", port_offset=0),
+            base_env=BASE_ENV,
+            cwd=tmp_path,
+        )
 
 
 def test_api_key_mode_passes_only_codex_api_key(tmp_path: Path) -> None:
@@ -366,6 +377,7 @@ repo = os.path.dirname(os.path.dirname(os.path.dirname(cwd)))  # <repo>/.agent-t
 schema = argv[argv.index("--output-schema") + 1]
 seen = {{"argv": argv, "env": dict(os.environ), "stdin": sys.stdin.read(), "cwd": cwd,
          "env_file_readable": readable(os.path.join(repo, ".env")),
+         "codex_auth_readable": readable(os.path.join(os.path.expanduser("~"), ".codex", "auth.json")),
          "runs_db_readable": readable(os.path.join(repo, ".agent-team", "runs.db")),
          "schema_readable": readable(schema), "app_readable": readable(os.path.join(cwd, "app.py"))}}
 with open(os.path.join(os.environ["TMPDIR"], "fake-codex.json"), "w") as out:
@@ -407,7 +419,11 @@ def fake_codex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
         monkeypatch.setenv("GH_TOKEN", "ghp_E2ECANARY000000000000")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-E2ECANARY0000000000000")
-        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.setenv("CODEX_API_KEY", "sk-proj-CODEXKEYCANARY00000000")
+        home = tmp_path / "home"
+        (home / ".codex").mkdir(parents=True, exist_ok=True)
+        (home / ".codex" / "auth.json").write_text('{"access_token":"test"}\n', encoding="utf-8")
+        monkeypatch.setenv("HOME", str(home))
         return fake
 
     return _install
@@ -454,13 +470,16 @@ def test_codex_reviewer_end_to_end(repo: Path, fake_codex, srt: str) -> None:
     for leaked in ("GH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY"):
         assert leaked not in seen["env"]
     assert not seen["env_file_readable"], "srt denyRead hides the target repo's .env"
+    assert not seen["codex_auth_readable"], "srt denyRead hides ~/.codex/auth.json from reviewer commands"
     assert not seen["runs_db_readable"], "and the run record"
     assert seen["schema_readable"] and seen["app_readable"], "but not the run's own checkout or compiled files"
 
     settings = json.loads((repo / ".agent-team" / "sandbox" / f"{run.run_id}.json").read_text())
-    assert {"chatgpt.com", "auth.openai.com"} <= set(settings["network"]["allowedDomains"])
-    assert "api.openai.com" not in settings["network"]["allowedDomains"], "login mode needs no API host"
+    assert "api.openai.com" in settings["network"]["allowedDomains"]
+    assert "chatgpt.com" not in settings["network"]["allowedDomains"]
+    assert "auth.openai.com" not in settings["network"]["allowedDomains"]
     assert f"{repo}/**/.env*" in settings["filesystem"]["denyRead"]
+    assert any(str(d).endswith("/.codex/**") for d in settings["filesystem"]["denyRead"])
     compiled = repo / ".agent-team" / "compiled" / run.run_id
     assert (compiled / "agents" / "independent-reviewer.toml").is_file() and (compiled / "config.toml").is_file()
     assert not (repo / ".codex").exists() and not (repo / ".claude").exists()
@@ -493,10 +512,11 @@ def test_codex_timeout_is_recorded(repo: Path, fake_codex, srt: str) -> None:
     assert run.outcome == "failed" and transitions[-1].note == "timeout: exit -9"
 
 
-def test_codex_refuses_without_auth_before_recording(repo: Path, fake_codex) -> None:
+def test_codex_refuses_without_auth_before_recording(repo: Path, fake_codex, monkeypatch: pytest.MonkeyPatch) -> None:
     fake_codex(logged_in=False)
+    monkeypatch.delenv("CODEX_API_KEY", raising=False)
     result = invoke_run(repo)
-    assert result.exit_code == 2 and "codex has no auth" in result.output
+    assert result.exit_code == 2 and "set CODEX_API_KEY for this shell" in result.output
     assert RunStore.open(repo, create=False) is None
 
 

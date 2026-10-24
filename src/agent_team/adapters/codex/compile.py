@@ -33,6 +33,9 @@ from agent_team.schemas.skill import SkillSpec
 # One srt denyRead entry: a gitignore-shaped glob, or a path srt must take literally.
 DenyRead = str | dict[str, Any]
 
+# Codex login files are always denied to reviewer commands; runtime auth uses CODEX_API_KEY.
+CODEX_PROTECTED: tuple[str, ...] = ("~/.codex/**",)
+
 
 @dataclass(frozen=True)
 class CompiledCodexAgent:
@@ -185,7 +188,7 @@ def compile_agent(
     """Write the compiled files for one agent under `out_dir` and describe them."""
     deny = [*agent.capabilities.deny, *policy.denied_capabilities]
     permissions = resolve(agent.capabilities.allow, deny, ceiling, test_commands=test_commands)
-    protected = list(dict.fromkeys([*policy.protected_paths, *DEFAULT_PROTECTED]))
+    protected = list(dict.fromkeys([*policy.protected_paths, *DEFAULT_PROTECTED, *CODEX_PROTECTED]))
     schema = output_schema(agent)
     prompt = build_prompt(body, agent, skills, permissions, test_commands, schema is not None)
 
@@ -199,6 +202,7 @@ def compile_agent(
         "approval_policy": "never",  # headless: a request for approval is a denial, never a prompt
         "web_search": "disabled",
         # Shell commands get the core variables only, and never one named like a key, secret or token.
+        # unverified: that Codex keeps these excludes on by default for command_execution shells.
         "shell_environment_policy.inherit": "core",
         "shell_environment_policy.ignore_default_excludes": False,
         "developer_instructions": prompt,
