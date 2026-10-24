@@ -12,6 +12,7 @@ running, with the evidence every earlier node left. Gate outcomes:
     retry gate passes, traversals left     back edge (one implementer retry)
     retry gate passes, none left           escalate edge, run ends blocked
     escalate gate passes                   escalate edge, run ends blocked
+    the node escalates (no PR opened)      next state as usual, run ends blocked
     no gate passes, evidence missing,
     or the node reports a blocker          BLOCKED, run ends blocked
     the executor raises                    BLOCKED, run ends failed, error re-raised
@@ -47,12 +48,17 @@ class NodeInput:
 
 @dataclass(frozen=True)
 class NodeResult:
-    """What a node hands back: its evidence, the cost it spent, and a blocker if it could not finish."""
+    """What a node hands back: its evidence, the cost it spent, and a blocker if it could not finish.
+
+    `escalate` lets the run go on but hands the end to a human: it finishes `blocked`,
+    as when the PR step could not open a PR and kept the branch instead.
+    """
 
     evidence: Mapping[str, Any] = field(default_factory=dict)
     cost_usd: float = 0.0
     note: str | None = None
     blocked: str | None = None
+    escalate: bool = False
 
 
 class Executor(Protocol):
@@ -199,6 +205,8 @@ def walk(
         if missing:
             return _block(store, run_id, _join(pending, result.note, f"{state} left no evidence {missing}"), echo)
         ctx.evidence.update(result.evidence)
+        if result.escalate:
+            ctx.escalated = True
         if node.terminal:
             return store.finish_run(run_id, "blocked" if ctx.escalated else "succeeded")
         edge, why = choose_edge(node, ctx)

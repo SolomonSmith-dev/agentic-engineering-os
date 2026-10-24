@@ -87,7 +87,7 @@ def test_settings_allow_writes_only_where_a_run_needs_them(tmp_path: Path) -> No
     ]
     assert str(git_dir) not in fs["allowWrite"], "never the whole .git: hooks, config and main stay read-only"
     assert fs["denyWrite"] == [str(wt / ".git")]
-    assert fs["denyRead"] == [str(home / ".ssh"), str(home / ".aws")]
+    assert fs["denyRead"] == [str(home / n) for n in (".ssh", ".aws", ".config/gh", ".git-credentials", ".netrc")]
 
 
 def test_empty_allowlist_means_no_network(tmp_path: Path) -> None:

@@ -219,6 +219,10 @@ def run(
     ),
     timeout: float = typer.Option(1800, "--timeout", min=1, help="Kill each agent call after this many seconds."),
     test_command: list[str] = typer.Option([], "--test-command", help="Test command the agent may run (repeatable)."),
+    lint_command: list[str] = typer.Option([], "--lint-command", help="Lint command the TEST step runs (repeatable; --workflow)."),
+    typecheck_command: list[str] = typer.Option(
+        [], "--typecheck-command", help="Type-check command the TEST step runs (repeatable; --workflow)."
+    ),
 ) -> None:
     """Run one canonical agent (--agent) or a workflow (--workflow), and record everything it does."""
     if (agent is None) == (workflow is None):
@@ -251,6 +255,9 @@ def run(
             timeout_s=timeout,
             registry_path=registry,
             test_commands=tuple(test_command),
+            lint_commands=tuple(lint_command),
+            typecheck_commands=tuple(typecheck_command),
+            gh=_which("gh"),
             echo=typer.echo,
         )
         try:
@@ -318,6 +325,8 @@ def resume(
     ),
     timeout: float = typer.Option(1800, "--timeout", min=1, help="Kill each agent call after this many seconds."),
     test_command: list[str] = typer.Option([], "--test-command", help="Test command the agent may run (repeatable)."),
+    lint_command: list[str] = typer.Option([], "--lint-command", help="Lint command the TEST step runs (repeatable)."),
+    typecheck_command: list[str] = typer.Option([], "--typecheck-command", help="Type-check command the TEST step runs (repeatable)."),
 ) -> None:
     """Re-enter an interrupted workflow run at its last checkpoint; its worktrees were kept."""
     claude = _claude_or_exit()
@@ -329,6 +338,9 @@ def resume(
         timeout_s=timeout,
         registry_path=registry,
         test_commands=tuple(test_command),
+        lint_commands=tuple(lint_command),
+        typecheck_commands=tuple(typecheck_command),
+        gh=_which("gh"),
         echo=typer.echo,
     )
     try:

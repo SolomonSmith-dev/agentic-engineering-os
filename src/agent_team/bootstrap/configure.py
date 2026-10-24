@@ -217,6 +217,7 @@ def _compile_agents(
                 roots=[root],
                 home=Path.home(),
                 test_commands=tuple(config.commands.get("test", [])),
+                sandboxed=False,  # these files load in the developer's own Claude Code, which srt does not wrap
             )
             text = compiled.native_md.read_text(encoding="utf-8")
         frontmatter, fence, prompt = text.partition("\n---\n")  # split at the closing fence

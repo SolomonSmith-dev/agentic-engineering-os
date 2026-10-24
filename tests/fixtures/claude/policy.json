@@ -6,11 +6,15 @@
     "*.pem",
     "~/.ssh/**",
     "~/.aws/**",
-    "~/.config/gcloud/**"
+    "~/.config/gcloud/**",
+    "~/.config/gh/**",
+    "~/.git-credentials",
+    "~/.netrc"
   ],
   "roots": [
     "<TMP>/worktree",
     "<TMP>/repo"
   ],
-  "home": "<TMP>/home"
+  "home": "<TMP>/home",
+  "write_root": "<TMP>/worktree"
 }

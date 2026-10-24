@@ -6,7 +6,7 @@ through flags, so nothing is written into the target repository's `.claude/`
 
     agents.json       --agents: the agent, its tools and its prompt
     settings.json     --settings: permission allow/deny rules, dontAsk, PreToolUse hook, fallbackModel
-    policy.json       read by the hook: protected paths and the roots they resolve against
+    policy.json       read by the hook: protected paths, the roots they resolve against, the write root
     agents/<name>.md  the same agent as a native subagent file, for inspection and step 8
     schema.json       --json-schema, when the agent's output has a registered schema
 
@@ -33,6 +33,8 @@ from agent_team.schemas.skill import SkillSpec
 # Protected in every compiled session on top of the policy's own list (architecture section 8).
 DEFAULT_PROTECTED: tuple[str, ...] = (
     ".env*", "*.pem", "~/.ssh/**", "~/.aws/**", "~/.config/gcloud/**", "~/.claude/**",
+    # GitHub credentials: the orchestrator holds github.*, and a worker must never read the token.
+    "~/.config/gh/**", "~/.git-credentials", "~/.netrc",
 )  # fmt: skip
 
 PERMISSION_MODE = "dontAsk"
@@ -107,11 +109,15 @@ def compile_agent(
     roots: list[Path],
     home: Path,
     test_commands: tuple[str, ...] = (),
+    sandboxed: bool = False,
     python: str = sys.executable,
 ) -> CompiledAgent:
-    """Write the compiled files for one agent under `out_dir` and describe them."""
+    """Write the compiled files for one agent under `out_dir` and describe them.
+
+    `roots[0]` is the session's working directory, the only place file tools may write.
+    """
     deny = [*agent.capabilities.deny, *policy.denied_capabilities]
-    permissions = resolve(agent.capabilities.allow, deny, ceiling, test_commands=test_commands)
+    permissions = resolve(agent.capabilities.allow, deny, ceiling, test_commands=test_commands, sandboxed=sandboxed)
     protected = list(dict.fromkeys([*policy.protected_paths, *DEFAULT_PROTECTED]))
     schema = output_schema(agent)
 
@@ -119,7 +125,11 @@ def compile_agent(
     (out_dir / "agents").mkdir(exist_ok=True)
     policy_json = out_dir / "policy.json"
     policy_json.write_text(
-        json.dumps({"protected_paths": protected, "roots": [str(r) for r in roots], "home": str(home)}, indent=2) + "\n",
+        json.dumps(
+            {"protected_paths": protected, "roots": [str(r) for r in roots], "home": str(home), "write_root": str(roots[0])},
+            indent=2,
+        )
+        + "\n",
         encoding="utf-8",
     )
 
