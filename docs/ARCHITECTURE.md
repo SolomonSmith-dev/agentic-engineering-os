@@ -144,12 +144,12 @@ An adapter does three things: declare capabilities, compile canonical files into
 | mcp | true | true | true (YAML) | false | false |
 | hooks | true (33 events) | not used (`[hooks]` exists, trust-gated) | false | false | false |
 | sandbox | bash-only native; full via srt | `sandbox_mode` | ephemeral cloud, 59 min | whatever the environment gives | same |
-| headless | `-p --bare --output-format json` | `codex exec --json` | issue assignment → PR | stdin/stdout contract | OpenAI-compatible API |
+| headless | `-p --output-format stream-json --settings <compiled>`; `--setting-sources ""` with a login, `--bare` with `ANTHROPIC_API_KEY` | `codex exec --json` | issue assignment → PR | stdin/stdout contract | OpenAI-compatible API |
 | remote\_execution | cloud sessions | cloud (unverified) | always | no | no |
 | per\_agent\_model | true | true | true | n/a | fixed |
 | cost\_report | `total_cost_usd` (estimate) | OTel events | premium requests | none | tokens only |
 
-Degradation rules: a workflow asks for capabilities by name; when the runtime lacks one the orchestrator substitutes (no hooks → policy enforced in orchestrator before dispatch; no parallel agents → serialize the DAG; no sandbox → cap autonomy at A1). Nothing is faked: the run record states which capabilities were unavailable. The independent-reviewer role is always compiled to a different vendor from the implementer when the organization permits two.
+Degradation rules: a workflow asks for capabilities by name; when the runtime lacks one the orchestrator substitutes (no hooks → policy enforced in orchestrator before dispatch; no parallel agents → serialize the DAG; no sandbox → worktree only, autonomy capped at A2). Nothing is faked: the run record states which capabilities were unavailable. The independent-reviewer role is always compiled to a different vendor from the implementer when the organization permits two.
 
 Compile backend: trial [rulesync](https://github.com/dyoshikawa/rulesync) for agents, skills, MCP and rules first; write our own emitter only for the things it does not cover (workflows, policies, environments, evals). Rejection criteria for rulesync are your standing ones: it may not send content to a third party, self-update from an unpinned source, or edit config outside the paths we hand it.
 
@@ -205,7 +205,7 @@ The smallest version worth building is one command, one workflow, one runtime, t
 - `agent-team doctor`, `init`, `configure`, `inspect`, `run`, `trace`: six commands, no `ask`, `plan`, `ship`, `costs`, `eval` subcommands yet (eval runs as a script).
 - One workflow: bug-fix (DISCOVERY → PLAN → IMPLEMENTATION → TEST → CODE REVIEW → PR). Feature and the others are YAML added later, not code.
 - Four agents compiled: orchestrator (runs in-process, not as a model call where logic suffices), archaeologist, implementer, independent-reviewer. The reviewer runs on Codex when `codex` is installed, otherwise on a different Claude model class.
-- One runtime adapter: Claude Code via `claude -p --bare --output-format json --settings <compiled>`. Codex adapter only as far as the reviewer needs it.
+- One runtime adapter: Claude Code via `claude -p --output-format stream-json --settings <compiled>`, with `--setting-sources ""` under a subscription login and `--bare` only when `ANTHROPIC_API_KEY` is set. Codex adapter only as far as the reviewer needs it.
 - Environment: git worktree per task, wrapped in `srt` on macOS and Linux; falls back to worktree-only with autonomy capped at A2 when `srt` is absent.
 - Policy engine: deny-list plus autonomy ceiling, compiled to Claude `permissions` and a `PreToolUse` hook.
 - Run record: SQLite file in `.agent-team/runs.db`, one row per run, one per tool call. `trace` reads it.
@@ -223,7 +223,7 @@ Each step is one PR, reversible, with its own test. Python 3.12 via uv, `typer` 
 3. `doctor`: host and runtime detection, auth state (present / absent, never values), egress test, managed-settings detection. Snapshot test against fixture outputs.
 4. Run record (SQLite) and `trace`. Written before any agent runs so nothing is ever unrecorded.
 5. Environment allocator: worktree create / dispose / stale sweep, `.worktreeinclude` handling, `srt` wrapper with network allowlist, port offset per worktree. Tests use a throwaway repo.
-6. Claude adapter: compile one canonical agent to `.claude/agents/`, compile policy to permissions + hook, invoke `-p --bare`, parse JSON, normalize result and cost into the run record.
+6. Claude adapter: compile one canonical agent to `.agent-team/compiled/<run-id>/` (passed by flag, never written to the target's `.claude/`), compile policy to permissions + hook, invoke `-p` (`--setting-sources ""` with a login, `--bare` with an API key), parse stream-json, normalize result and cost into the run record.
 7. Model registry YAML and class resolution; `fallbackModel` chain emitted into compiled settings.
 8. `init` read-only discovery and `proposal.yaml`; `configure` with diff-before-write and marked blocks in existing instruction files.
 9. `inspect`: archaeologist agent at A0 writing repository memory; verification of detected commands by dry run.
@@ -303,7 +303,7 @@ Four of the five decisions are now locked; the time box is the only one still op
 | Reviewer > severities | blocker, major, minor; blocker and major block; minor becomes PR follow-ups |
 | Reviewer > scope | Requirement-to-hunk tracing; every criterion maps to code and a test |
 | Reviewer > budget | `--max-budget-usd 1.00` per review call; abort is recorded with reason |
-| Reviewer > checklist | `canonical/skills/review-checklist/SKILL.md`, preloaded via the agent's `skills` field |
+| Reviewer > checklist | `canonical/skills/review-checklist/SKILL.md`, named in the agent's `skills` field and inlined into its compiled prompt |
 | Repo > visibility | Public from the first commit |
 | Repo > names | Repo `agentic-engineering-os`, CLI `agent-team` |
 | Repo > license | Apache-2.0 |
