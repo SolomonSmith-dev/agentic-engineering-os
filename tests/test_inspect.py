@@ -371,13 +371,21 @@ HOME_CREDENTIALS = {
     ".gnupg/private-keys-v1.d/key": "GNUPG-CANARY",
     ".azure/accessTokens.json": "AZURE-CANARY",
     ".config/op/config": "OP-CANARY",
-    ".cargo/credentials.toml": "CARGO-CANARY",
+    ".cargo/credentials": "CARGO-CANARY",
+    ".cargo/credentials.toml": "CARGO-TOML-CANARY",
     ".m2/settings.xml": "MAVEN-CANARY",
     ".gradle/gradle.properties": "GRADLE-CANARY",
     ".codex/auth.json": "CODEX-CANARY",
+    ".vault-token": "VAULT-CANARY",
+    ".terraform.d/credentials.tfrc.json": "TERRAFORM-CANARY",
+    ".config/containers/auth.json": "CONTAINERS-CANARY",
+    ".gem/credentials": "GEM-CANARY",
+    ".config/hub": "HUB-CANARY",
+    ".cache/huggingface/token": "HF-CANARY",
 }
-REPO_KEYS = {"deploy.key": "KEY-CANARY", "signing.p12": "P12-CANARY", "cert.pfx": "PFX-CANARY",
-             "id_ed25519": "SSHKEY-CANARY"}  # fmt: skip
+# Committed, so they are in the run's worktree as well as the target repository.
+REPO_KEYS = {"deploy.key": "KEY-CANARY", "certs/signing.p12": "P12-CANARY", "cert.pfx": "PFX-CANARY",
+             "id_ed25519": "ED25519-CANARY", "keys/id_rsa": "RSA-CANARY", "id_ecdsa.pub": "ECDSA-CANARY"}  # fmt: skip
 
 
 def test_inspect_commands_cannot_read_host_or_repo_credentials(
@@ -392,9 +400,12 @@ def test_inspect_commands_cannot_read_host_or_repo_credentials(
     reads = " ".join(f"$$HOME/{name}" for name in [*HOME_CREDENTIALS, ".gitconfig"])
     keys = " ".join(f"../../../{name}" for name in REPO_KEYS)  # the target repo, from the run's worktree
     makefile = f"test:\n\t@for f in {reads} {keys} {' '.join(REPO_KEYS)}; do cat $$f 2>/dev/null; done; true\n"
-    root = make_repo(tmp_path / "target", makefile=makefile, gitignore=".agent-team/\n.env\n" + "\n".join(REPO_KEYS) + "\n")
+    root = make_repo(tmp_path / "target", makefile=makefile)
     for name, canary in REPO_KEYS.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
         (root / name).write_text(f"{canary}\n", encoding="utf-8")
+    git(root, "add", *REPO_KEYS)
+    git(root, "commit", "-q", "-m", "commit key files")
     write_proposal(root, which=lambda tool: f"/usr/bin/{tool}")
     fake_claude()
     result = inspect(root)

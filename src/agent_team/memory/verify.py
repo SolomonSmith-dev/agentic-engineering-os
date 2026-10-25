@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
-from agent_team.adapters.claude.compile import DEFAULT_PROTECTED
+from agent_team.adapters.claude.compile import DEFAULT_PROTECTED, PROTECTED_FILES
 from agent_team.adapters.claude.invoke import ENV_ALLOWLIST
 from agent_team.adapters.codex.compile import srt_deny_read
 from agent_team.environments.sandbox import Sandbox, extend_settings, srt_path
@@ -77,7 +77,7 @@ INSPECT_PROTECTED: tuple[str, ...] = ("~/.codex/**",)
 
 def protect(sandbox: Sandbox, policy: PolicySpec, *, root: Path, worktree: Path, home: Path) -> None:
     """Add srt read denies for the policy's protected paths, keeping the run's own checkout and temp dir."""
-    protected = list(dict.fromkeys([*policy.protected_paths, *DEFAULT_PROTECTED, *INSPECT_PROTECTED]))
+    protected = list(dict.fromkeys([*policy.protected_paths, *DEFAULT_PROTECTED, *PROTECTED_FILES, *INSPECT_PROTECTED]))
     keep = [worktree, sandbox.tmp_dir]
     extend_settings(sandbox, deny_read=srt_deny_read(protected, [worktree, root], home, keep))
 
