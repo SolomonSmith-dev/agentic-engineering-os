@@ -174,7 +174,7 @@ class DefaultExecutor:
             if path.is_file():
                 try:
                     self._config = RepoConfig.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
-                except (yaml.YAMLError, ValidationError, OSError) as exc:
+                except (yaml.YAMLError, ValidationError, OSError, UnicodeDecodeError) as exc:
                     raise OrchestratorError(f"{path} is unreadable ({type(exc).__name__}); re-run 'agent-team configure'") from exc
             self._config_read = True
         return self._config
