@@ -59,18 +59,25 @@ def test_a_help_that_fails_is_unavailable_even_with_every_flag(tmp_path: Path) -
         check_flags(str(fake), {})
 
 
-def test_probes_get_only_the_allowlisted_environment(tmp_path: Path) -> None:
+def test_the_flag_probe_gets_only_the_allowlisted_environment(tmp_path: Path) -> None:
     fake = tmp_path / "codex"
     seen = tmp_path / "seen.json"
-    fake.write_text(f"#!{sys.executable}\nimport json, os, sys\njson.dump(dict(os.environ), open({str(seen)!r}, 'w'))\nsys.exit(0)\n",
-                    encoding="utf-8")  # fmt: skip
+    flags = " ".join(REQUIRED_FLAGS)
+    fake.write_text(f"#!{sys.executable}\nimport json, os\njson.dump(dict(os.environ), open({str(seen)!r}, 'w'))\n"
+                    f"print({flags!r})\n", encoding="utf-8")  # fmt: skip
     fake.chmod(0o755)
     env = {"PATH": "/usr/bin:/bin", "CODEX_HOME": str(tmp_path / ".codex"), "GH_TOKEN": "ghp_PROBECANARY000000000000",
-           "OPENAI_API_KEY": "sk-proj-PROBECANARY0000000000"}  # fmt: skip
-    assert has_auth(str(fake), env) is True
+           "OPENAI_API_KEY": "sk-proj-PROBECANARY0000000000", "CODEX_API_KEY": "sk-proj-CODEXPROBECANARY00000"}  # fmt: skip
+    check_flags(str(fake), env)
     got = json.loads(seen.read_text())
-    assert "GH_TOKEN" not in got and "OPENAI_API_KEY" not in got and got["CODEX_HOME"] == env["CODEX_HOME"]
-    assert has_auth(str(tmp_path / "missing"), {"CODEX_API_KEY": "  "}) is False, "a blank key is not an api key"
+    assert not {"GH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_HOME"} & set(got), "the probe needs no credential"
+
+
+def test_auth_is_the_api_key_alone(tmp_path: Path) -> None:
+    codex = str(tmp_path / "missing")
+    assert has_auth(codex, {"CODEX_API_KEY": "sk-proj-KEY"}) is True
+    assert has_auth(codex, {"CODEX_API_KEY": "  "}) is False, "a blank key is not an api key"
+    assert has_auth(codex, {"CODEX_HOME": str(tmp_path / ".codex")}) is False, "a login file is not accepted"
 
 
 # --- parsing ------------------------------------------------------------------------
