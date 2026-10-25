@@ -339,17 +339,12 @@ def test_default_branch_from_the_remote_head_then_the_current_branch(tmp_path: P
     assert (vcs.host, vcs.remote) == ("other", "example.invalid/acme/x")
 
 
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="bug: configure.py:154-158 _read catches only FileNotFoundError, so a non-UTF-8 instruction file "
-    "raises UnicodeDecodeError past the CLI's BootstrapError handler (cli.py:118) instead of a clean refusal",
-)
 def test_a_non_utf8_instruction_file_is_refused_cleanly(python_repo: Path) -> None:
     (python_repo / "CLAUDE.md").write_bytes("# Caf\xe9\n".encode("latin-1"))
     assert init(python_repo).exit_code == 0
     approve(python_repo)
     before = tree(python_repo)
     result = configure(python_repo, "--yes")
-    assert tree(python_repo) == before, "nothing is written either way"
-    assert result.exit_code == 2 and "CLAUDE.md" in result.output
+    assert tree(python_repo) == before
+    assert result.exit_code == 2 and "CLAUDE.md is not UTF-8 text" in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit), "a refusal, not a traceback"

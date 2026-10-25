@@ -24,7 +24,10 @@ from test_implementer import (  # noqa: F401  (fixtures are used by name)
     world,
 )
 from test_memory_edges import FAKE_SRT
+from typer.testing import CliRunner
 
+from agent_team import cli
+from agent_team.cli import app
 from agent_team.environments import acquire, read_lock, release
 from agent_team.environments.lock import LockHeldError
 from agent_team.environments.sandbox import Sandbox
@@ -444,14 +447,13 @@ def test_a_worktree_on_another_branch_is_not_the_run_branch() -> None:
     assert ensure_run_branch(SimpleNamespace(meta=SimpleNamespace(branch="agent-team/r1")), "r1") == "agent-team/r1"  # type: ignore[arg-type]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="bug: executors.py:177 catches YAMLError, ValidationError and OSError but not UnicodeDecodeError, "
-    "so a non-UTF-8 config.yaml crashes `run --workflow` with a traceback instead of naming the file",
-)
-def test_a_non_utf8_config_yaml_is_reported_before_the_run(repo: Path) -> None:
+def test_a_non_utf8_config_yaml_is_reported_before_the_run(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (repo / ".agent-team").mkdir(exist_ok=True)
     (repo / ".agent-team" / "config.yaml").write_bytes(b"autonomy_ceiling: caf\xe9\n")
     ex = executor(repo)
     [problem] = ex.unavailable(load_dag(ex.canonical, "bug-fix", "default"))
     assert "config.yaml is unreadable (UnicodeDecodeError)" in problem
+    monkeypatch.setattr(cli, "_which", lambda name: f"/opt/bin/{name}")
+    result = CliRunner().invoke(app, ["run", "--workflow", "bug-fix", "--repo", str(repo), "--canonical", str(CANONICAL), TASK])
+    assert result.exit_code == 2 and "config.yaml is unreadable (UnicodeDecodeError)" in result.output
+    assert RunStore.open(repo, create=False) is None, "refused before recording a run"
