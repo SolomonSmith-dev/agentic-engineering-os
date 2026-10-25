@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from agent_team.adapters.claude.compile import DEFAULT_PROTECTED, output_schema
+from agent_team.adapters.claude.compile import DEFAULT_PROTECTED, PROTECTED_FILES, output_schema
 from agent_team.adapters.codex.capabilities import CodexPermissions, resolve
 from agent_team.schemas.agent import AgentSpec
 from agent_team.schemas.common import Autonomy
@@ -211,7 +211,7 @@ def compile_agent(
     """Write the compiled files for one agent under `out_dir` and describe them."""
     deny = [*agent.capabilities.deny, *policy.denied_capabilities]
     permissions = resolve(agent.capabilities.allow, deny, ceiling, test_commands=test_commands)
-    protected = list(dict.fromkeys([*policy.protected_paths, *DEFAULT_PROTECTED, *CODEX_PROTECTED]))
+    protected = list(dict.fromkeys([*policy.protected_paths, *DEFAULT_PROTECTED, *PROTECTED_FILES, *CODEX_PROTECTED]))
     schema = output_schema(agent)
     prompt = build_prompt(body, agent, skills, permissions, test_commands, schema is not None)
 

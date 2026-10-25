@@ -24,6 +24,7 @@ from typing import Any
 import yaml
 
 from agent_team.adapters.claude.capabilities import Permissions, resolve
+from agent_team.environments.sandbox import HOME_LOGIN_DIRS, HOME_LOGIN_FILES, KEY_FILES
 from agent_team.schemas.adapter import OUTPUT_SCHEMAS
 from agent_team.schemas.agent import AgentSpec
 from agent_team.schemas.common import Autonomy
@@ -35,7 +36,13 @@ DEFAULT_PROTECTED: tuple[str, ...] = (
     ".env*", "*.pem", "~/.ssh/**", "~/.aws/**", "~/.config/gcloud/**", "~/.claude/**",
     # GitHub credentials: the orchestrator holds github.*, and a worker must never read the token.
     "~/.config/gh/**", "~/.git-credentials", "~/.netrc",
+    # Registry, cluster and cloud logins a build tool would pick up from home.
+    *(f"~/{d}/**" for d in HOME_LOGIN_DIRS), *(f"~/{f}" for f in HOME_LOGIN_FILES),
 )  # fmt: skip
+
+# Key files are denied as files (permission deny rules, srt denyRead) but not given to the hook:
+# its scan of every word in a command would also block `jq .key` or `event.key`.
+PROTECTED_FILES: tuple[str, ...] = KEY_FILES
 
 PERMISSION_MODE = "dontAsk"
 
@@ -133,7 +140,9 @@ def compile_agent(
         encoding="utf-8",
     )
 
-    path_denies = [path_rule(tool, p) for p in protected for tool in ("Read", "Edit", "Write")]
+    path_denies = [
+        path_rule(tool, p) for p in dict.fromkeys([*protected, *PROTECTED_FILES]) for tool in ("Read", "Edit", "Write")
+    ]
     settings = {
         "permissions": {
             "defaultMode": PERMISSION_MODE,
