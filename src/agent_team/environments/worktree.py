@@ -14,6 +14,7 @@ commits past the base are saved as a patch first.
 """
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -57,6 +58,7 @@ class Environment:
     autonomy_ceiling: Autonomy
     includes_copied: list[str] = field(default_factory=list)
     includes_skipped: list[str] = field(default_factory=list)
+    git_dir: Path | None = None  # the repository's common .git, resolved from the root, never from the worktree
 
     @property
     def path(self) -> Path:
@@ -83,6 +85,74 @@ def _git(cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProce
     result = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, check=False)
     if check and result.returncode != 0:
         raise AllocatorError(f"git {' '.join(args)} failed in {cwd}: {result.stderr.strip()}")
+    return result
+
+
+# Git run in a worktree an agent wrote: no hooks, no fsmonitor, no external diff or textconv.
+_AGENT_TREE_GIT: tuple[str, ...] = ("-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false")
+_GIT_ENV_DROP = ("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CONFIG", "GIT_CONFIG_GLOBAL",
+                 "GIT_CONFIG_SYSTEM", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES")  # fmt: skip
+
+
+class TamperedWorktreeError(AllocatorError):
+    """The worktree's git pointers no longer name the repository agent-team created it in."""
+
+
+def check_pointers(common: Path, worktree: Path) -> Path:
+    """Refuse unless the files that tell git which repository to open are the ones `git worktree add` wrote.
+
+    The worktree's `.git` file and its admin dir's `commondir` (and a `config.worktree`) are files an agent
+    can write. Git follows them even when GIT_DIR and GIT_COMMON_DIR are set (the ref store reads `commondir`
+    itself), so a repointed worktree would make the git agent-team runs outside the sandbox write refs into,
+    or read a config from, a repository the agent planted. Returns the admin dir.
+    """
+    admin = common / "worktrees" / worktree.name
+    if not admin.is_dir():
+        raise TamperedWorktreeError(f"{worktree} has no admin directory under {common}; refusing to run git in it")
+    problems = []
+    try:
+        dotgit = (worktree / ".git").read_text(encoding="utf-8").strip()
+    except OSError:
+        dotgit = ""
+    named = Path(dotgit.removeprefix("gitdir:").strip()) if dotgit.startswith("gitdir:") else None
+    if named is None or (named if named.is_absolute() else worktree / named).resolve() != admin.resolve():
+        problems.append(f"{worktree / '.git'} does not point at {admin}")
+    try:
+        commondir = (admin / "commondir").read_text(encoding="utf-8").strip()
+    except OSError:
+        commondir = ""
+    target = Path(commondir) if Path(commondir).is_absolute() else admin / commondir
+    if not commondir or target.resolve() != common.resolve():
+        problems.append(f"{admin / 'commondir'} does not point at {common}")
+    if (admin / "config.worktree").exists():
+        problems.append(f"{admin / 'config.worktree'} exists; agent-team never writes one")
+    if problems:
+        raise TamperedWorktreeError(
+            "the worktree's git pointers were changed, so agent-team will not run git in it; left in place for "
+            "a human to inspect: " + "; ".join(problems)
+        )
+    return admin
+
+
+def _worktree_env(root: Path, worktree: Path) -> dict[str, str]:
+    """GIT_DIR, GIT_COMMON_DIR and GIT_WORK_TREE from the root's common .git, after `check_pointers`."""
+    common = Path(_git(root, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip())
+    admin = check_pointers(common, worktree)
+    env = {k: v for k, v in os.environ.items() if k not in _GIT_ENV_DROP}
+    env.update(GIT_DIR=str(admin), GIT_COMMON_DIR=str(common), GIT_WORK_TREE=str(worktree))
+    return env
+
+
+def _agent_git(
+    root: Path, worktree: Path, *args: str, check: bool = True, text: bool = True
+) -> subprocess.CompletedProcess:
+    result = subprocess.run(
+        ["git", "-C", str(worktree), *_AGENT_TREE_GIT, *args], capture_output=True, text=text, check=False,
+        env=_worktree_env(root, worktree),
+    )  # fmt: skip
+    if check and result.returncode != 0:
+        err = result.stderr if text else result.stderr.decode(errors="replace")
+        raise AllocatorError(f"git {' '.join(args)} failed in {worktree}: {err.strip()}")
     return result
 
 
@@ -189,6 +259,7 @@ def create(
         autonomy_ceiling=effective_ceiling(requested_autonomy, sandbox.sandboxed),
         includes_copied=copied,
         includes_skipped=skipped,
+        git_dir=git_dir,
     )
 
 
@@ -218,22 +289,26 @@ def attach(
         home=home,
         srt=srt,
     )
-    return Environment(meta=meta, sandbox=sandbox, autonomy_ceiling=effective_ceiling(requested_autonomy, sandbox.sandboxed))
+    return Environment(
+        meta=meta,
+        sandbox=sandbox,
+        autonomy_ceiling=effective_ceiling(requested_autonomy, sandbox.sandboxed),
+        git_dir=git_dir,
+    )
 
 
 def _archive(root: Path, worktree: Path, run_id: str, base: str | None) -> Path | None:
     """Save uncommitted changes and commits past `base` as a binary patch. None when there is nothing."""
-    dirty = bool(_git(worktree, "status", "--porcelain").stdout.strip())
+    dirty = bool(_agent_git(root, worktree, "status", "--porcelain").stdout.strip())
     ahead = False
     if base is not None:
-        ahead = _git(worktree, "rev-list", "--count", f"{base}..HEAD").stdout.strip() != "0"
+        ahead = _agent_git(root, worktree, "rev-list", "--count", f"{base}..HEAD").stdout.strip() != "0"
     if not dirty and not ahead:
         return None
-    _git(worktree, "add", "--all")
-    diff = subprocess.run(
-        ["git", "-C", str(worktree), "diff", "--cached", "--binary", base or "HEAD"],
-        capture_output=True,
-        check=False,
+    _agent_git(root, worktree, "add", "--all")
+    diff = _agent_git(
+        root, worktree, "diff", "--no-ext-diff", "--no-textconv", "--cached", "--binary", base or "HEAD",
+        check=False, text=False,
     )
     if diff.returncode != 0:
         raise AllocatorError(f"could not archive {worktree}; it was left in place: {diff.stderr.decode(errors='replace').strip()}")
@@ -259,7 +334,7 @@ def _remove(root: Path, run_id: str, meta: WorktreeMeta | None) -> tuple[Path | 
     if worktree.is_dir():
         if (worktree / ".git").exists():
             if branch is None:
-                current = _git(worktree, "rev-parse", "--abbrev-ref", "HEAD", check=False).stdout.strip()
+                current = _agent_git(root, worktree, "rev-parse", "--abbrev-ref", "HEAD", check=False).stdout.strip()
                 branch = current if current.startswith(BRANCH_PREFIX) else None
             archive = _archive(root, worktree, run_id, meta.base_commit if meta else None)
         removed = _git(root, "worktree", "remove", "--force", str(worktree), check=False)
@@ -329,7 +404,11 @@ def sweep(repo: Path) -> list[SweepResult]:
             if reason is None:
                 results.append(SweepResult(run_id, "kept", "run not finished; resume needs it"))
                 continue
-            archive, kept = _remove(root, run_id, meta)
+            try:
+                archive, kept = _remove(root, run_id, meta)
+            except TamperedWorktreeError as exc:
+                results.append(SweepResult(run_id, "kept", str(exc)))
+                continue
             if kept is not None:
                 reason += f"; branch {kept} kept: its commits are on no other ref"
             results.append(SweepResult(run_id, "disposed", reason, str(archive) if archive else None))

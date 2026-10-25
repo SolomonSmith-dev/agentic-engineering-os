@@ -308,6 +308,7 @@ def _run_codex(
         home=Path.home(),
         keep=[environment.path, environment.sandbox.tmp_dir],
         test_commands=test_commands,
+        codex_home=base_env.get("CODEX_HOME"),
     )
     extend_settings(
         environment.sandbox,

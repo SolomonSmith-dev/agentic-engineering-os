@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from agent_team.adapters.claude.compile import DEFAULT_PROTECTED, output_schema
+from agent_team.adapters.claude.compile import DEFAULT_PROTECTED, PROTECTED_FILES, output_schema
 from agent_team.adapters.codex.capabilities import CodexPermissions, resolve
 from agent_team.schemas.agent import AgentSpec
 from agent_team.schemas.common import Autonomy
@@ -32,6 +32,11 @@ from agent_team.schemas.skill import SkillSpec
 
 # One srt denyRead entry: a gitignore-shaped glob, or a path srt must take literally.
 DenyRead = str | dict[str, Any]
+
+# Codex login files are always denied to reviewer commands; runtime auth uses CODEX_API_KEY.
+# A `CODEX_HOME` set in the caller's environment is denied as well (see `codex_home_deny_read`).
+CODEX_PROTECTED: tuple[str, ...] = ("~/.codex/**",)
+CODEX_LOGIN_FILE = "auth.json"
 
 
 @dataclass(frozen=True)
@@ -168,6 +173,26 @@ def srt_deny_read(protected: Sequence[str], roots: Sequence[Path], home: Path, k
     return unique
 
 
+def codex_home_deny_read(codex_home: str | None, home: Path, keep: Sequence[Path]) -> list[DenyRead]:
+    """srt denyRead entries for a `CODEX_HOME` the caller set, where Codex keeps its login when it is not `~/.codex`.
+
+    The directory is denied as given and as resolved, in case it is a symlink. When
+    it is the home directory or holds a path the run needs, only its login file is.
+    """
+    if not codex_home or not codex_home.strip():
+        return []
+    given = Path(codex_home.strip()).expanduser()
+    if not given.is_absolute():
+        return []  # Codex resolves a relative CODEX_HOME against its own cwd; there is no stable path to deny
+    keep = [Path(p) for p in keep]
+    entries: list[DenyRead] = []
+    for path in dict.fromkeys([given, given.resolve()]):
+        if path == home or _is_ancestor(path, keep):
+            path = path / CODEX_LOGIN_FILE
+        entries.append({"path": str(path), "literal": True})
+    return entries
+
+
 def compile_agent(
     agent: AgentSpec,
     body: str,
@@ -181,11 +206,12 @@ def compile_agent(
     home: Path,
     keep: list[Path],
     test_commands: tuple[str, ...] = (),
+    codex_home: str | None = None,
 ) -> CompiledCodexAgent:
     """Write the compiled files for one agent under `out_dir` and describe them."""
     deny = [*agent.capabilities.deny, *policy.denied_capabilities]
     permissions = resolve(agent.capabilities.allow, deny, ceiling, test_commands=test_commands)
-    protected = list(dict.fromkeys([*policy.protected_paths, *DEFAULT_PROTECTED]))
+    protected = list(dict.fromkeys([*policy.protected_paths, *DEFAULT_PROTECTED, *PROTECTED_FILES, *CODEX_PROTECTED]))
     schema = output_schema(agent)
     prompt = build_prompt(body, agent, skills, permissions, test_commands, schema is not None)
 
@@ -199,6 +225,7 @@ def compile_agent(
         "approval_policy": "never",  # headless: a request for approval is a denial, never a prompt
         "web_search": "disabled",
         # Shell commands get the core variables only, and never one named like a key, secret or token.
+        # unverified: that Codex keeps these excludes on by default for command_execution shells.
         "shell_environment_policy.inherit": "core",
         "shell_environment_policy.ignore_default_excludes": False,
         "developer_instructions": prompt,
@@ -233,6 +260,9 @@ def compile_agent(
         config_toml=config_toml,
         schema_json=schema_json,
         overrides=overrides,
-        deny_read=srt_deny_read(protected, roots, home, [*keep, out_dir]),
+        deny_read=[
+            *srt_deny_read(protected, roots, home, [*keep, out_dir]),
+            *codex_home_deny_read(codex_home, home, [*keep, out_dir]),
+        ],
         permissions=permissions,
     )

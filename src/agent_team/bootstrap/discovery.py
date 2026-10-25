@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 import yaml
 
 from agent_team.doctor import _which
+from agent_team.environments.sandbox import KEY_FILE_SUFFIXES
 from agent_team.runs.store import STATE_DIR, RunStoreError, _git, check_state_dir_ignored, repo_root
 from agent_team.schemas.bootstrap import (
     COMMAND_KINDS,
@@ -82,7 +83,7 @@ WALK_MAX_DEPTH = 4
 SCAN_MAX_BYTES = 512 * 1024
 
 ENV_TEMPLATE_SUFFIXES: tuple[str, ...] = (".example", ".sample", ".template", ".dist")
-KEY_SUFFIXES: tuple[str, ...] = (".pem", ".key", ".p12", ".pfx")
+KEY_SUFFIXES: tuple[str, ...] = KEY_FILE_SUFFIXES  # one list: what init reports is what the sandbox denies
 
 # References to a secret store inside config files. Only the kind is reported, never the match.
 SECRET_REFS: tuple[tuple[str, re.Pattern[str]], ...] = (
