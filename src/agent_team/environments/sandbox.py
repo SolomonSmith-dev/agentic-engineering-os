@@ -21,9 +21,26 @@ from agent_team.schemas.environment import EnvironmentSpec
 # Ceiling for any run that is not wrapped in srt (worktree-only isolation).
 UNSANDBOXED_CEILING: Autonomy = "A2"
 
+# Key files by name, anywhere in a repository. `init` reports these suffixes as secrets.
+KEY_FILE_SUFFIXES: tuple[str, ...] = (".pem", ".key", ".p12", ".pfx")
+KEY_FILES: tuple[str, ...] = (*(f"*{suffix}" for suffix in KEY_FILE_SUFFIXES), "id_rsa*", "id_ecdsa*", "id_ed25519*")
+
+# Registry, cluster and cloud logins a build tool would pick up from home.
+HOME_LOGIN_DIRS: tuple[str, ...] = (".docker", ".kube", ".gnupg", ".azure", ".config/op")
+HOME_LOGIN_FILES: tuple[str, ...] = (
+    ".npmrc", ".pypirc", ".cargo/credentials", ".cargo/credentials.toml", ".m2/settings.xml",
+    ".gradle/gradle.properties", ".vault-token", ".terraform.d/credentials.tfrc.json",
+    ".config/containers/auth.json", ".gem/credentials", ".config/hub", ".cache/huggingface/token",
+)  # fmt: skip
+
 # Read-denied for every sandboxed process: credentials that never belong in a run. The GitHub
 # ones are the orchestrator's (it pushes and runs gh outside the sandbox), never a worker's.
-DENY_READ_HOME: tuple[str, ...] = (".ssh", ".aws", ".config/gh", ".git-credentials", ".netrc")
+# ~/.gnupg is left readable here so a worker's own commit still works under a global
+# commit.gpgsign; the hook, Codex runs and inspect deny it (DEFAULT_PROTECTED).
+DENY_READ_HOME: tuple[str, ...] = (
+    ".ssh", ".aws", ".config/gh", ".git-credentials", ".netrc",
+    *(d for d in HOME_LOGIN_DIRS if d != ".gnupg"), *HOME_LOGIN_FILES,
+)  # fmt: skip
 
 
 def srt_path() -> str | None:
@@ -51,6 +68,12 @@ def git_write_paths(git_dir: Path, run_id: str) -> list[Path]:
     ]
 
 
+def git_pointer_files(git_dir: Path, worktree: Path) -> list[Path]:
+    """The files under the worktree's admin dir that point git at a repository: deny writes to each that exists."""
+    admin = git_dir / "worktrees" / worktree.name
+    return [admin / name for name in ("commondir", "gitdir", "config.worktree") if (admin / name).exists()]
+
+
 def build_settings(
     spec: EnvironmentSpec, *, run_id: str, worktree: Path, git_dir: Path, tmp_dir: Path, home: Path
 ) -> dict[str, object]:
@@ -64,7 +87,9 @@ def build_settings(
         "filesystem": {
             "denyRead": [*(str(home / name) for name in DENY_READ_HOME), *extra],
             "allowWrite": [str(worktree), str(tmp_dir), *(str(p) for p in git_write_paths(git_dir, run_id))],
-            "denyWrite": [str(worktree / ".git")],
+            # The worktree's .git file and its admin dir's commondir and gitdir name the repository git
+            # opens; rewritten, the orchestrator's own git (outside srt) would read a config the agent wrote.
+            "denyWrite": [str(worktree / ".git"), *(str(p) for p in git_pointer_files(git_dir, worktree))],
         },
     }
 
