@@ -66,7 +66,13 @@ Every compiled session protects the policy's `protected_paths` plus a fixed list
 ```text
 .env*   *.pem   ~/.ssh/**   ~/.aws/**   ~/.config/gcloud/**   ~/.claude/**
 ~/.config/gh/**   ~/.git-credentials   ~/.netrc
+~/.docker/**   ~/.kube/**   ~/.gnupg/**   ~/.azure/**   ~/.config/op/**
+~/.npmrc   ~/.pypirc   ~/.cargo/credentials   ~/.cargo/credentials.toml   ~/.m2/settings.xml
+~/.gradle/gradle.properties   ~/.vault-token   ~/.terraform.d/credentials.tfrc.json
+~/.config/containers/auth.json   ~/.gem/credentials   ~/.config/hub   ~/.cache/huggingface/token
 ```
+
+The home logins come from `HOME_LOGIN_DIRS` and `HOME_LOGIN_FILES` in `src/agent_team/environments/sandbox.py`. Key files by name (`KEY_FILES`: `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*`, `id_ecdsa*`, `id_ed25519*`, anywhere) are added as `Read`, `Edit` and `Write` deny rules but not given to the hook, whose scan of every word in a command would also block `jq .key` (`PROTECTED_FILES` in `compile.py`).
 
 The default policy adds `.agent-team/**` (the run record, other runs' worktrees and the compiled settings), apart from the run's own checkout.
 
@@ -86,9 +92,10 @@ The hook is a tripwire, not a boundary. A process that builds a path at run time
 
 When `srt` is installed and the environment's tier is `srt` (`canonical/environments/default.yaml`), every worker and every repository command agent-team runs is wrapped in it (`src/agent_team/environments/sandbox.py`):
 
-- **Network**: denied except the environment's `allowed_domains`: `api.anthropic.com`, `github.com`, `*.github.com`, `*.githubusercontent.com`, `pypi.org`, `files.pythonhosted.org`, `registry.npmjs.org` by default. A Codex run adds only its auth mode's hosts.
-- **Writes**: only the worktree, the run's temp directory, and the corners of `.git` a commit on the run's branch needs: the object store, the worktree's admin directory, and `refs/heads/agent-team/` with its reflog under `logs/`. `main` and every other ref, `.git/hooks` and `.git/config` stay read-only, so a sandboxed commit cannot plant a hook or config that later runs outside the sandbox.
-- **Reads denied**: `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.git-credentials`, `~/.netrc` for every run. `inspect`'s command verification and the Codex runtime also deny the policy's protected paths (`srt_deny_read` in `src/agent_team/adapters/codex/compile.py`).
+- **Network**: denied except the environment's `allowed_domains`: `api.anthropic.com`, `github.com`, `*.github.com`, `*.githubusercontent.com`, `pypi.org`, `files.pythonhosted.org`, `registry.npmjs.org` by default. A Codex run adds only `api.openai.com`.
+- **Writes**: only the worktree, the run's temp directory, and the corners of `.git` a commit on the run's branch needs: the object store, the worktree's admin directory, and `refs/heads/agent-team/` with its reflog under `logs/`. `main` and every other ref, `.git/hooks` and `.git/config` stay read-only, so a sandboxed commit cannot plant a hook or config that later runs outside the sandbox. The worktree's `.git` file and its admin directory's `commondir`, `gitdir` and `config.worktree` are write-denied, because they name the repository git opens (`git_pointer_files`).
+- **Reads denied for every run** (`DENY_READ_HOME`): `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.git-credentials`, `~/.netrc`, and the home logins above except `~/.gnupg`, which stays readable so a worker's own commit works under a global `commit.gpgsign` (the hook still protects it).
+- **Reads denied for `inspect`'s command verification and Codex runs only**: the policy's protected paths, `DEFAULT_PROTECTED`, the key files and `~/.codex/**` (`srt_deny_read` in `src/agent_team/adapters/codex/compile.py`; `protect` in `src/agent_team/memory/verify.py`). A Codex run also denies a `CODEX_HOME` you set (`codex_home_deny_read`). Claude runs do not get this list; see [THREAT_MODEL.md](THREAT_MODEL.md#t3-secret-read-through-an-obfuscated-shell-command).
 - **Its own rules are out of reach**: the settings file lives in `.agent-team/sandbox/`, outside the worktree.
 
 Without srt, a run falls back to the worktree alone and its ceiling is capped at A2. That means:
@@ -118,14 +125,14 @@ The worker reads its prompt on stdin. It does not load the target repository's s
 
 Compiled files live in `.agent-team/compiled/<run-id>/` and reach Claude Code only through flags; nothing is written into the target's `.claude/` at run time. Only `agent-team configure` writes there, after you approve its diff (`src/agent_team/bootstrap/configure.py`). It never writes `.claude/settings.json`, and never writes through a symlink.
 
-The Codex worker (`src/agent_team/adapters/codex/invoke.py`) gets the same allowlist plus `CODEX_HOME`, and `CODEX_API_KEY` only in API-key mode. It runs with `--ignore-user-config --ignore-rules --ephemeral`, so your `config.toml` and execpolicy rules do not load, and with the user config ignored no project is trusted, so the repository's `.codex/config.toml` and hooks do not load either.
+The Codex worker (`src/agent_team/adapters/codex/invoke.py`) runs on `CODEX_API_KEY` only: there is no login mode. It gets the same allowlist, `CODEX_API_KEY`, and a `CODEX_HOME` pointing at an empty directory in the run's temp directory; your own `CODEX_HOME` is never passed. It runs with `--ignore-user-config --ignore-rules --ephemeral`, so your `config.toml` and execpolicy rules do not load, and with the user config ignored no project is trusted, so the repository's `.codex/config.toml` and hooks do not load either.
 
 ## Auth reported as present or absent
 
 agent-team never reads, prints or stores a credential's value.
 
 - `agent-team doctor` reports Claude and GitHub auth as `present` or `absent` (`src/agent_team/doctor.py`). For Claude it reads only the `loggedIn` boolean from `claude auth status --json`; for gh only the exit code of `gh auth status`.
-- The Codex adapter checks `CODEX_API_KEY` is set or `codex login status` exits 0, and discards the output (`has_auth`).
+- The Codex adapter checks only that `CODEX_API_KEY` is set (`has_auth`).
 - `gh_authenticated` in `src/agent_team/orchestrator/pr.py` reads only the exit code.
 - Canonical tool files name a credential by handle (`credential: GH_TOKEN`); the schema rejects anything that is not an upper-case variable name (`src/agent_team/schemas/tool.py`).
 - `init` records secret files by path and kind and remote URLs without their userinfo (`src/agent_team/bootstrap/discovery.py`).
@@ -153,7 +160,7 @@ Read [THREAT_MODEL.md](THREAT_MODEL.md) before trusting a run with anything valu
 
 - Protected paths inside the repository are only a tripwire on the Claude path.
 - An API key in API-key mode is in the worker's environment.
-- `~/.claude` and `~/.codex` stay readable inside the sandbox, because the runtimes read their own logins there.
+- `~/.claude` stays readable inside the sandbox, because Claude Code reads its own login there.
 - The reviewer and the implementer currently share a vendor.
 - The Codex adapter has never run against a real Codex.
 

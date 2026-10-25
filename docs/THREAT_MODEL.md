@@ -8,9 +8,9 @@ Residual risks are stated plainly. Where a control does less than [ARCHITECTURE.
 
 | Asset | Where it lives |
 | --- | --- |
-| A1. Host credentials | `~/.ssh`, `~/.aws`, `~/.config/gcloud`, keychains, signing keys |
+| A1. Host credentials | `~/.ssh`, `~/.aws`, `~/.config/gcloud`, registry, cluster and cloud logins (`~/.docker`, `~/.kube`, `~/.npmrc` and others), keychains, signing keys |
 | A2. The GitHub credential | `GH_TOKEN` / `GITHUB_TOKEN` in your shell, or `~/.config/gh`, `~/.git-credentials`, `~/.netrc` |
-| A3. Model-runtime credentials | Claude login under `~/.claude`, `ANTHROPIC_API_KEY`; Codex login under `~/.codex`, `CODEX_API_KEY` |
+| A3. Model-runtime credentials | Claude login under `~/.claude`, `ANTHROPIC_API_KEY`; `CODEX_API_KEY` (a Codex login under `~/.codex` is never used, and denied) |
 | A4. Repository secrets | `.env*`, `*.pem` and similar files in the target repository |
 | A5. The target repository's integrity | its default and protected branches, `.git/config`, `.git/hooks`, files outside the run's worktree |
 | A6. The run record and artifacts | `.agent-team/runs.db`, `.agent-team/artifacts/`, `.agent-team/memory/` |
@@ -74,15 +74,17 @@ Attackers: R2, R3. Assets A1, A2, A3.
 Mitigations:
 
 - **The worker's environment is built from an allowlist,** not inherited, so `GH_TOKEN`, `GITHUB_TOKEN` and cloud credentials never reach it (`ENV_ALLOWLIST` and `build_invocation` in `src/agent_team/adapters/claude/invoke.py` and `src/agent_team/adapters/codex/invoke.py`).
-- **srt denies reads of `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.git-credentials` and `~/.netrc` for every sandboxed process** (`DENY_READ_HOME` in `sandbox.py`).
-- **The same paths, plus `~/.config/gcloud` and `~/.claude`, are compiled into deny rules and the PreToolUse hook** (`DEFAULT_PROTECTED` in `compile.py`, `src/agent_team/adapters/claude/hook.py`).
+- **srt denies reads of `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.git-credentials`, `~/.netrc` and the home registry, cluster and cloud logins (`HOME_LOGIN_DIRS` minus `~/.gnupg`, `HOME_LOGIN_FILES`) for every sandboxed process** (`DENY_READ_HOME` in `sandbox.py`).
+- **The same paths, plus `~/.config/gcloud`, `~/.gnupg` and `~/.claude`, are compiled into deny rules and the PreToolUse hook; key files by name (`KEY_FILES`) into deny rules only** (`DEFAULT_PROTECTED`, `PROTECTED_FILES` in `compile.py`, `src/agent_team/adapters/claude/hook.py`).
+- **Codex runs on `CODEX_API_KEY` only, with an empty `CODEX_HOME` of its own; `~/.codex/**` and a caller's `CODEX_HOME` are srt read-denied** (`auth_mode`, `build_invocation` in `src/agent_team/adapters/codex/invoke.py`; `CODEX_PROTECTED`, `codex_home_deny_read` in `compile.py`).
 - **`gh` is denied in every session,** and the orchestrator alone holds the GitHub credential (`pr.py`).
 
 Residual:
 
-- **API-key mode puts the key in the worker's environment.** In that mode (`ANTHROPIC_API_KEY`, or `CODEX_API_KEY` for Codex) the key is in the worker's environment, readable by any command it runs.
-- **The runtimes' own logins stay readable.** `~/.claude` (Claude) and `~/.codex` (Codex) are not srt read-denied, because each runtime reads its own login there. For Claude only the hook stands between a Bash command and `~/.claude`, and the hook is a tripwire (T3).
-- **`~/.config/gcloud` is a hook and permission rule only.** It is not an srt read deny on the Claude path.
+- **API keys reach the worker process.** In Claude's API-key mode `ANTHROPIC_API_KEY` is in the worker's environment, readable by any command it runs. Codex always runs on `CODEX_API_KEY`; Codex is meant to strip it from shell commands (below).
+- **Claude's own login stays readable.** `~/.claude` is not srt read-denied, because Claude Code reads its login there. Only the hook stands between a Bash command and `~/.claude`, and the hook is a tripwire (T3).
+- **On the Claude path, `~/.config/gcloud`, `~/.gnupg` and key files by name (`KEY_FILES`) are hook or permission rules only,** not srt read denies.
+- **For Codex, the key is withheld from shell commands only by Codex's own shell-environment excludes,** which the code marks unverified against a real Codex.
 
 ### T3. Secret read through an obfuscated shell command
 
@@ -97,11 +99,11 @@ Mitigations:
 
 Residual, verified on this branch:
 
-- **On the Claude path, srt does not read-deny the policy's protected paths inside the target repository.** This covers a single `run --agent` and the bug-fix workflow: the implementer's Bash, and the DISCOVERY and TEST commands the orchestrator runs. Only `DENY_READ_HOME` is applied.
+- **On the Claude path, srt does not read-deny the policy's protected paths inside the target repository.** This covers a single `run --agent` and the bug-fix workflow: the implementer's Bash, and the DISCOVERY and TEST commands the orchestrator runs. Only `DENY_READ_HOME` is applied, which since #32 covers home logins (T2) but nothing inside the repository: not `.env*`, not key files, not `.agent-team/`.
 - **Demonstration.** A process inside the run's sandbox, started from the worktree, read the target repository's `.env` with `f=.e; cat ../../../${f}nv`.
 - **What else is exposed.** The same holds for `.agent-team/runs.db` and other runs' artifacts. Because TEST runs code the implementer wrote, a test can read them, and the hook never sees it.
 - **What partly limits it.** Redaction catches only known token shapes in what is stored (T4). The network allowlist limits where the data can go (T5).
-- **The fix.** Apply the same `srt_deny_read` extension the Codex path uses, minus `~/.claude` for the Claude worker, to every Claude run and workflow environment.
+- **The fix.** Apply the same `srt_deny_read` extension the Codex path and `inspect` use, minus `~/.claude` for the Claude worker, to every Claude run and workflow environment.
 
 ### T4. A secret leaks into the run record, an artifact or the PR
 
@@ -147,8 +149,8 @@ Mitigations:
 
 Residual:
 
-- **agent-team trusts the local `.git/`.** Its own `git` calls (discovery, the worktree allocator in `src/agent_team/environments/worktree.py`) honour the repository's `.git/config` and hooks. A clone you made yourself has a `.git/config` git wrote. A repository directory received as an archive can carry one that runs code on any git command (`core.fsmonitor`, hooks), before agent-team runs anything. Clone repositories yourself. Binaries: `claude`, `codex` and `gh` are looked up as absolute paths only; `srt` is found with plain `shutil.which` and `git` is called by name, so both resolve through your `PATH`.
-- **The allocator's git calls do not set `core.hooksPath=/dev/null`.** Unlike the orchestrator's `SAFE_GIT`, `git worktree add` and the archive step (`_archive`) in `worktree.py` run with your local hooks, on the host; `git worktree add` runs `post-checkout`.
+- **agent-team trusts the target's own `.git/`.** Discovery and the allocator's repository-level calls (`git worktree add`, `remove`, `prune`, `branch -D` in `src/agent_team/environments/worktree.py`) honour the repository's `.git/config` and hooks. A clone you made yourself has a `.git/config` git wrote. A repository directory received as an archive can carry one that runs code on any git command (`core.fsmonitor`, hooks), before agent-team runs anything. Clone repositories yourself. Binaries: `claude`, `codex` and `gh` are looked up as absolute paths only; `srt` is found with plain `shutil.which` and `git` is called by name, so both resolve through your `PATH`.
+- **`git worktree add` does not set `core.hooksPath=/dev/null`.** It runs your local `post-checkout` hook on the host. Git calls inside a worktree an agent wrote (`_archive`, `_remove`) now run with hooks and fsmonitor off and pinned repository paths (`_agent_git` in `worktree.py`).
 - **Repository commands can still reach the network allowlist (T5) and read what srt does not deny (T3).**
 - **Without srt, an A2 agent granted `test.run` runs the named test commands with no sandbox** (`CAPABILITY_RULES` in `capabilities.py`: only `shell.execute.workspace` is in `SANDBOX_ONLY`).
 
@@ -160,7 +162,9 @@ Mitigations:
 
 - **srt allows writes only where a commit on the run branch needs them:** the worktree, the run's temp directory, `.git/objects`, the worktree's admin directory, and `refs/heads/agent-team/` with its reflog. `.git/hooks` and `.git/config` are read-only, and the worktree's `.git` file is write-denied (`git_write_paths`, `build_settings` in `sandbox.py`).
 - **The hook blocks file-tool writes into git metadata,** symlinks followed (`check` in `hook.py`).
-- **The orchestrator's own git runs with hooks off and signing off** (`SAFE_GIT` in `src/agent_team/orchestrator/workspace.py`), and pushes with `--no-verify` (`push` in `pr.py`).
+- **The orchestrator's own git runs with hooks, fsmonitor and signing off** (`SAFE_GIT` in `src/agent_team/orchestrator/workspace.py`), and pushes with `--no-verify` (`push` in `pr.py`).
+- **Git that runs in an agent's worktree, outside srt, never reads where to look from files the agent can write.** `GIT_DIR`, `GIT_COMMON_DIR` and `GIT_WORK_TREE` are pinned to paths resolved from the repository root, inherited git variables that would redirect it are dropped, and git refuses to run at all when the worktree's `.git`, `commondir` or a `config.worktree` no longer match what `git worktree add` wrote (`pinned_env`, `worktree_git` in `workspace.py`; `check_pointers`, `TamperedWorktreeError` in `worktree.py`). `env sweep` keeps such a worktree for a human to inspect.
+- **srt write-denies those pointer files** (`git_pointer_files` in `sandbox.py`).
 - **srt's settings file lives outside the worktree** (`settings_path` in `sandbox.py`).
 
 Residual:
