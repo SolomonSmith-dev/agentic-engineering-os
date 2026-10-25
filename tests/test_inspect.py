@@ -303,6 +303,65 @@ def test_command_timeout_kills_the_command(tmp_path: Path, fake_claude, srt: str
     assert [c.result_status for c in calls if c.tool_name == "inspect.verify"][0] == "timeout"
 
 
+def test_endless_output_is_never_written_to_disk(tmp_path: Path, srt: str) -> None:
+    # `ulimit -f` caps regular files only, not pipes: if output went to a file again, the command would
+    # be killed by SIGXFSZ about 10 MB in and the marker after the 200 MB would never be printed.
+    work = tmp_path / "work"
+    work.mkdir()
+    settings = tmp_path / "srt.json"
+    settings.write_text(json.dumps({"network": {"allowedDomains": [], "deniedDomains": []},
+                                    "filesystem": {"denyRead": [], "allowWrite": [str(work)], "denyWrite": []}}))  # fmt: skip
+    sandbox = Sandbox(srt=srt, settings_path=settings, tmp_dir=work, port_offset=0)
+    command = f"ulimit -f 20000; yes {OUTPUT_TOKEN} | head -c 200000000; echo; echo output-end; exit 7"
+    result = run_command(Candidate("test", command, "Makefile", True), sandbox=sandbox, cwd=work, timeout_s=120,
+                         base_env=dict(os.environ), redaction=(OUTPUT_TOKEN,))  # fmt: skip
+    assert (result.status, result.exit_code, result.reason) == ("failed", 7, "exit 7")
+    assert result.output_tail is not None and result.output_tail.endswith("output-end")
+    assert "[REDACTED]" in result.output_tail and OUTPUT_TOKEN not in result.output_tail
+    assert len(result.output_tail) <= verify_module.OUTPUT_TAIL_CHARS
+    assert list(work.iterdir()) == [], "nothing was written in the sandbox either"
+
+
+class _Unwrapped(Sandbox):
+    """Runs the command as is: for timing tests of run_command itself, where srt adds nothing."""
+
+    @property
+    def sandboxed(self) -> bool:
+        return True
+
+    def wrap(self, argv: list[str]) -> list[str]:
+        return argv
+
+
+def test_a_child_left_holding_the_output_does_not_hold_the_run(tmp_path: Path) -> None:
+    pid_file = tmp_path / "child.pid"
+    child = f"import os, time; os.setsid(); open({str(pid_file)!r}, 'w').write(str(os.getpid())); time.sleep(60)"
+    command = f"{sys.executable} -c \"{child}\" & echo started"
+    sandbox = _Unwrapped(srt=None, settings_path=None, tmp_dir=tmp_path, port_offset=0)
+    start = time.monotonic()
+    try:
+        result = run_command(Candidate("test", command, "Makefile", True), sandbox=sandbox, cwd=tmp_path,
+                             timeout_s=30, base_env=dict(os.environ), redaction=())  # fmt: skip
+        elapsed = time.monotonic() - start
+    finally:
+        for _ in range(50):
+            if pid_file.exists() and pid_file.read_text():
+                os.kill(int(pid_file.read_text()), 9)
+                break
+            time.sleep(0.1)
+    assert (result.status, result.exit_code, result.output_tail) == ("passed", 0, "started")
+    assert elapsed < 15, "the command exited; its escaped child must not keep the run waiting"
+
+
+def test_a_command_that_closes_its_output_still_runs_to_its_end(tmp_path: Path) -> None:
+    sandbox = _Unwrapped(srt=None, settings_path=None, tmp_dir=tmp_path, port_offset=0)
+    command = "echo before; exec >/dev/null 2>&1; sleep 1; touch finished; exit 4"
+    result = run_command(Candidate("test", command, "Makefile", True), sandbox=sandbox, cwd=tmp_path, timeout_s=30,
+                         base_env=dict(os.environ), redaction=())  # fmt: skip
+    assert (result.status, result.exit_code, result.output_tail) == ("failed", 4, "before")
+    assert (tmp_path / "finished").exists()
+
+
 def test_without_srt_commands_are_never_run(repo: Path, fake_claude, no_srt) -> None:
     fake_claude()
     result = inspect(repo)
