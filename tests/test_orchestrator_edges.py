@@ -8,6 +8,7 @@ instead when AGENT_TEAM_REQUIRE_SRT=1). No test calls a model or opens a real PR
 """
 
 import dataclasses
+import json
 import os
 import shutil
 import sys
@@ -302,6 +303,77 @@ def test_an_implementer_that_crashes_blocks_with_its_cost(repo: Path, world: Wor
     with RunStore.open(repo, create=False) as store:
         [child] = store.list_runs()
         assert child.outcome == "failed"
+
+
+SCRIPTED_CLAUDE = r'''#!{python}
+"""Fake implementer: runs the scenario's shell script in its worktree, then reports the scenario's output."""
+import json, subprocess, sys
+
+if sys.argv[1:] == ["--version"]:
+    print("2.1.310 (Claude Code)")
+    sys.exit(0)
+sys.stdin.read()
+scenario = json.load(open({scenario!r}))
+subprocess.run(["/bin/sh", "-c", scenario["script"]], check=True)
+for event in [{{"type": "system", "subtype": "init"}},
+              {{"type": "result", "subtype": "success", "is_error": False, "result": "done", "total_cost_usd": 0.1,
+                "num_turns": 1, "session_id": "fake", "structured_output": scenario["out"]}}]:
+    print(json.dumps(event), flush=True)
+'''
+
+
+@pytest.fixture
+def scripted(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """An executor whose implementer runs `script` and reports `out`."""
+    monkeypatch.setattr("agent_team.environments.sandbox.srt_path", lambda: None)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    scenario = tmp_path / "scripted.json"
+    fake = tmp_path / "scripted-bin" / "claude"
+    fake.parent.mkdir()
+    fake.write_text(SCRIPTED_CLAUDE.format(python=sys.executable, scenario=str(scenario)), encoding="utf-8")
+    fake.chmod(0o755)
+
+    def play(script: str, **out: object) -> DefaultExecutor:
+        report = {"reproduction_command": "sh check.sh", "reproduction_fails": False, "changes": [], **out}
+        scenario.write_text(json.dumps({"script": script, "out": report}), encoding="utf-8")
+        return dataclasses.replace(executor(repo), claude=str(fake))
+
+    return play
+
+
+def discover(ex: DefaultExecutor):  # noqa: ANN201
+    given = NodeInput(run_id=RUN, workflow="bug-fix", state="DISCOVERY", attempt=1, task=TASK, inputs={})
+    return ex(load_dag(ex.canonical, "bug-fix", "default").node("DISCOVERY"), given)
+
+
+def test_a_blank_reproduction_command_blocks_discovery(scripted) -> None:
+    result = discover(scripted("true", reproduction_command="   ", reproduction_fails=True))
+    assert result.blocked == "the implementer returned no reproduction command"
+    assert "reproduction_fails" not in result.evidence, "nothing is taken on the implementer's word"
+
+
+def test_an_implementer_that_leaves_the_run_branch_blocks(scripted, repo: Path) -> None:
+    result = implement(scripted("git checkout -q -b elsewhere && echo fixed > value.txt && git commit -qam elsewhere"), 1)
+    assert result.blocked and f"the worktree is not on agent-team/{RUN} any more" in result.blocked
+    assert result.note and result.note.startswith("agent implementer run "), "the child run is still named"
+    assert "diff" not in result.evidence
+
+
+def test_commits_that_cancel_out_change_nothing_and_block(scripted) -> None:
+    script = "echo fixed > value.txt && git commit -qam fix && git revert --no-edit HEAD >/dev/null"
+    result = implement(scripted(script), 1)
+    assert result.blocked and result.blocked.startswith("the run branch changes nothing against its base ")
+
+
+def test_absolute_claimed_paths_are_made_relative_to_the_worktree(scripted, repo: Path, tmp_path: Path) -> None:
+    worktree = repo / ".agent-team" / "worktrees" / RUN
+    changes = [{"file": str(worktree / "value.txt"), "summary": "fix"},
+               {"file": str(tmp_path / "elsewhere.txt"), "summary": "outside the worktree"}]  # fmt: skip
+    result = implement(scripted("echo fixed > value.txt && git commit -qam fix", changes=changes), 1)
+    assert result.blocked is None
+    claimed = result.evidence["claimed_changes"]
+    assert [c["file"] for c in claimed["changes"]] == ["value.txt", str(tmp_path / "elsewhere.txt")]
+    assert claimed["unclaimed"] == [], "the absolute claim covers value.txt"
 
 
 def test_an_unknown_in_process_step_blocks(repo: Path) -> None:
