@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from agent_team.environments import UNSANDBOXED_CEILING, create, effective_ceiling, srt_path
-from agent_team.environments.sandbox import build_settings
+from agent_team.environments.sandbox import DENY_READ_HOME, build_settings
 from agent_team.schemas import EnvironmentSpec
 
 ALLOWED = "github.com"
@@ -87,7 +87,8 @@ def test_settings_allow_writes_only_where_a_run_needs_them(tmp_path: Path) -> No
     ]
     assert str(git_dir) not in fs["allowWrite"], "never the whole .git: hooks, config and main stay read-only"
     assert fs["denyWrite"] == [str(wt / ".git")]
-    assert fs["denyRead"] == [str(home / n) for n in (".ssh", ".aws", ".config/gh", ".git-credentials", ".netrc")]
+    assert fs["denyRead"] == [str(home / n) for n in DENY_READ_HOME]
+    assert DENY_READ_HOME[:5] == (".ssh", ".aws", ".config/gh", ".git-credentials", ".netrc")
 
 
 def test_empty_allowlist_means_no_network(tmp_path: Path) -> None:
@@ -184,3 +185,13 @@ def test_srt_allows_domains_on_the_allowlist(repo: Path, home: Path, srt: str) -
     env = create(repo, "run-1", spec([ALLOWED]), home=home)
     result = run_in(env, ["curl", "-sS", "-m", "15", "-o", "/dev/null", f"https://{ALLOWED}"])
     assert result.returncode == 0, result.stderr
+
+
+def test_every_sandboxed_run_denies_home_logins(tmp_path: Path) -> None:
+    """The base settings every runtime starts from, not only inspect's and Codex's extras."""
+    home = tmp_path / "home"
+    settings = build_settings(spec([]), run_id="r", worktree=tmp_path, git_dir=tmp_path, tmp_dir=tmp_path, home=home)
+    denied = set(settings["filesystem"]["denyRead"])  # type: ignore[index]
+    for name in (".docker", ".kube", ".npmrc", ".pypirc", ".azure", ".vault-token", ".cache/huggingface/token"):
+        assert str(home / name) in denied, name
+    assert str(home / ".gnupg") not in denied, "a worker's own signed commit keeps working"

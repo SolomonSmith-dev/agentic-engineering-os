@@ -359,3 +359,59 @@ def test_invalid_archaeologist_output_writes_no_memory(repo: Path, fake_claude, 
 def test_summary_without_memory(repo: Path) -> None:
     result = inspect(repo, "--summary")
     assert result.exit_code == 1 and "no repository memory" in result.output
+
+
+# Credentials outside the default denies that a repository's own commands must not read
+# (review of steps 8-9, finding 1). Each file holds a canary the command prints if it can.
+HOME_CREDENTIALS = {
+    ".docker/config.json": "DOCKER-CANARY",
+    ".kube/config": "KUBE-CANARY",
+    ".npmrc": "NPMRC-CANARY",
+    ".pypirc": "PYPIRC-CANARY",
+    ".gnupg/private-keys-v1.d/key": "GNUPG-CANARY",
+    ".azure/accessTokens.json": "AZURE-CANARY",
+    ".config/op/config": "OP-CANARY",
+    ".cargo/credentials": "CARGO-CANARY",
+    ".cargo/credentials.toml": "CARGO-TOML-CANARY",
+    ".m2/settings.xml": "MAVEN-CANARY",
+    ".gradle/gradle.properties": "GRADLE-CANARY",
+    ".codex/auth.json": "CODEX-CANARY",
+    ".vault-token": "VAULT-CANARY",
+    ".terraform.d/credentials.tfrc.json": "TERRAFORM-CANARY",
+    ".config/containers/auth.json": "CONTAINERS-CANARY",
+    ".gem/credentials": "GEM-CANARY",
+    ".config/hub": "HUB-CANARY",
+    ".cache/huggingface/token": "HF-CANARY",
+}
+# Committed, so they are in the run's worktree as well as the target repository.
+REPO_KEYS = {"deploy.key": "KEY-CANARY", "certs/signing.p12": "P12-CANARY", "cert.pfx": "PFX-CANARY",
+             "id_ed25519": "ED25519-CANARY", "keys/id_rsa": "RSA-CANARY", "id_ecdsa.pub": "ECDSA-CANARY"}  # fmt: skip
+
+
+def test_inspect_commands_cannot_read_host_or_repo_credentials(
+    tmp_path: Path, fake_claude, srt: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    for name, canary in HOME_CREDENTIALS.items():
+        (home / name).parent.mkdir(parents=True, exist_ok=True)
+        (home / name).write_text(f"{canary}\n", encoding="utf-8")
+    (home / ".gitconfig").write_text("READABLE-CANARY\n", encoding="utf-8")  # control: not a credential
+    monkeypatch.setenv("HOME", str(home))
+    reads = " ".join(f"$$HOME/{name}" for name in [*HOME_CREDENTIALS, ".gitconfig"])
+    keys = " ".join(f"../../../{name}" for name in REPO_KEYS)  # the target repo, from the run's worktree
+    makefile = f"test:\n\t@for f in {reads} {keys} {' '.join(REPO_KEYS)}; do cat $$f 2>/dev/null; done; true\n"
+    root = make_repo(tmp_path / "target", makefile=makefile)
+    for name, canary in REPO_KEYS.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(f"{canary}\n", encoding="utf-8")
+    git(root, "add", *REPO_KEYS)
+    git(root, "commit", "-q", "-m", "commit key files")
+    write_proposal(root, which=lambda tool: f"/usr/bin/{tool}")
+    fake_claude()
+    result = inspect(root)
+    assert result.exit_code == 0, result.output
+    [test] = [c for c in commands_file(root) if c.command == "make test"]
+    assert test.status == "passed", test
+    assert "READABLE-CANARY" in (test.output_tail or ""), "the command ran and could read an ordinary file"
+    leaked = [c for c in [*HOME_CREDENTIALS.values(), *REPO_KEYS.values()] if c in (test.output_tail or "")]
+    assert leaked == [], f"inspect commands read: {leaked}"

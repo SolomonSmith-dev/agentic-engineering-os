@@ -21,9 +21,26 @@ from agent_team.schemas.environment import EnvironmentSpec
 # Ceiling for any run that is not wrapped in srt (worktree-only isolation).
 UNSANDBOXED_CEILING: Autonomy = "A2"
 
+# Key files by name, anywhere in a repository. `init` reports these suffixes as secrets.
+KEY_FILE_SUFFIXES: tuple[str, ...] = (".pem", ".key", ".p12", ".pfx")
+KEY_FILES: tuple[str, ...] = (*(f"*{suffix}" for suffix in KEY_FILE_SUFFIXES), "id_rsa*", "id_ecdsa*", "id_ed25519*")
+
+# Registry, cluster and cloud logins a build tool would pick up from home.
+HOME_LOGIN_DIRS: tuple[str, ...] = (".docker", ".kube", ".gnupg", ".azure", ".config/op")
+HOME_LOGIN_FILES: tuple[str, ...] = (
+    ".npmrc", ".pypirc", ".cargo/credentials", ".cargo/credentials.toml", ".m2/settings.xml",
+    ".gradle/gradle.properties", ".vault-token", ".terraform.d/credentials.tfrc.json",
+    ".config/containers/auth.json", ".gem/credentials", ".config/hub", ".cache/huggingface/token",
+)  # fmt: skip
+
 # Read-denied for every sandboxed process: credentials that never belong in a run. The GitHub
 # ones are the orchestrator's (it pushes and runs gh outside the sandbox), never a worker's.
-DENY_READ_HOME: tuple[str, ...] = (".ssh", ".aws", ".config/gh", ".git-credentials", ".netrc")
+# ~/.gnupg is left readable here so a worker's own commit still works under a global
+# commit.gpgsign; the hook, Codex runs and inspect deny it (DEFAULT_PROTECTED).
+DENY_READ_HOME: tuple[str, ...] = (
+    ".ssh", ".aws", ".config/gh", ".git-credentials", ".netrc",
+    *(d for d in HOME_LOGIN_DIRS if d != ".gnupg"), *HOME_LOGIN_FILES,
+)  # fmt: skip
 
 
 def srt_path() -> str | None:
