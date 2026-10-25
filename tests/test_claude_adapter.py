@@ -217,6 +217,21 @@ def test_hook_blocks_protected_paths(tool: str, tool_input: dict, blocked: bool,
     assert (reason is not None) == blocked, reason
 
 
+@pytest.mark.parametrize(
+    "command", ["jq -r '.key' package.json", "node -e 'console.log(event.key)'", "grep -rn id_ed25519 docs"]
+)
+def test_key_file_patterns_do_not_block_ordinary_commands(command: str, tmp_path: Path) -> None:
+    """Key files are denied as files, not by the hook's word scan, which would catch `.key` here."""
+    agent, body = reviewer()
+    compiled = compile_agent(agent, body, skills(agent), policy(), ceiling="A2", model=MODEL,
+                             out_dir=tmp_path / "c", roots=[tmp_path], home=tmp_path)  # fmt: skip
+    hook = json.loads(compiled.policy_json.read_text())
+    assert check({"tool_name": "Bash", "tool_input": {"command": command}}, hook) is None
+    deny = json.loads(compiled.settings_json.read_text())["permissions"]["deny"]
+    assert {"Read(**/*.key)", "Read(**/*.p12)", "Read(**/id_rsa*)"} <= set(deny)
+    assert check({"tool_name": "Bash", "tool_input": {"command": "cat ~/.docker/config.json"}}, hook) is not None
+
+
 def test_worktree_files_are_not_caught_by_the_state_dir_rule(hook_policy: dict) -> None:
     inside = Path(hook_policy["roots"][0]) / "src" / "main.py"
     assert check({"tool_name": "Edit", "tool_input": {"file_path": str(inside)}}, hook_policy) is None

@@ -303,6 +303,65 @@ def test_command_timeout_kills_the_command(tmp_path: Path, fake_claude, srt: str
     assert [c.result_status for c in calls if c.tool_name == "inspect.verify"][0] == "timeout"
 
 
+def test_endless_output_is_never_written_to_disk(tmp_path: Path, srt: str) -> None:
+    # `ulimit -f` caps regular files only, not pipes: if output went to a file again, the command would
+    # be killed by SIGXFSZ about 10 MB in and the marker after the 200 MB would never be printed.
+    work = tmp_path / "work"
+    work.mkdir()
+    settings = tmp_path / "srt.json"
+    settings.write_text(json.dumps({"network": {"allowedDomains": [], "deniedDomains": []},
+                                    "filesystem": {"denyRead": [], "allowWrite": [str(work)], "denyWrite": []}}))  # fmt: skip
+    sandbox = Sandbox(srt=srt, settings_path=settings, tmp_dir=work, port_offset=0)
+    command = f"ulimit -f 20000; yes {OUTPUT_TOKEN} | head -c 200000000; echo; echo output-end; exit 7"
+    result = run_command(Candidate("test", command, "Makefile", True), sandbox=sandbox, cwd=work, timeout_s=120,
+                         base_env=dict(os.environ), redaction=(OUTPUT_TOKEN,))  # fmt: skip
+    assert (result.status, result.exit_code, result.reason) == ("failed", 7, "exit 7")
+    assert result.output_tail is not None and result.output_tail.endswith("output-end")
+    assert "[REDACTED]" in result.output_tail and OUTPUT_TOKEN not in result.output_tail
+    assert len(result.output_tail) <= verify_module.OUTPUT_TAIL_CHARS
+    assert list(work.iterdir()) == [], "nothing was written in the sandbox either"
+
+
+class _Unwrapped(Sandbox):
+    """Runs the command as is: for timing tests of run_command itself, where srt adds nothing."""
+
+    @property
+    def sandboxed(self) -> bool:
+        return True
+
+    def wrap(self, argv: list[str]) -> list[str]:
+        return argv
+
+
+def test_a_child_left_holding_the_output_does_not_hold_the_run(tmp_path: Path) -> None:
+    pid_file = tmp_path / "child.pid"
+    child = f"import os, time; os.setsid(); open({str(pid_file)!r}, 'w').write(str(os.getpid())); time.sleep(60)"
+    command = f"{sys.executable} -c \"{child}\" & echo started"
+    sandbox = _Unwrapped(srt=None, settings_path=None, tmp_dir=tmp_path, port_offset=0)
+    start = time.monotonic()
+    try:
+        result = run_command(Candidate("test", command, "Makefile", True), sandbox=sandbox, cwd=tmp_path,
+                             timeout_s=30, base_env=dict(os.environ), redaction=())  # fmt: skip
+        elapsed = time.monotonic() - start
+    finally:
+        for _ in range(50):
+            if pid_file.exists() and pid_file.read_text():
+                os.kill(int(pid_file.read_text()), 9)
+                break
+            time.sleep(0.1)
+    assert (result.status, result.exit_code, result.output_tail) == ("passed", 0, "started")
+    assert elapsed < 15, "the command exited; its escaped child must not keep the run waiting"
+
+
+def test_a_command_that_closes_its_output_still_runs_to_its_end(tmp_path: Path) -> None:
+    sandbox = _Unwrapped(srt=None, settings_path=None, tmp_dir=tmp_path, port_offset=0)
+    command = "echo before; exec >/dev/null 2>&1; sleep 1; touch finished; exit 4"
+    result = run_command(Candidate("test", command, "Makefile", True), sandbox=sandbox, cwd=tmp_path, timeout_s=30,
+                         base_env=dict(os.environ), redaction=())  # fmt: skip
+    assert (result.status, result.exit_code, result.output_tail) == ("failed", 4, "before")
+    assert (tmp_path / "finished").exists()
+
+
 def test_without_srt_commands_are_never_run(repo: Path, fake_claude, no_srt) -> None:
     fake_claude()
     result = inspect(repo)
@@ -359,3 +418,59 @@ def test_invalid_archaeologist_output_writes_no_memory(repo: Path, fake_claude, 
 def test_summary_without_memory(repo: Path) -> None:
     result = inspect(repo, "--summary")
     assert result.exit_code == 1 and "no repository memory" in result.output
+
+
+# Credentials outside the default denies that a repository's own commands must not read
+# (review of steps 8-9, finding 1). Each file holds a canary the command prints if it can.
+HOME_CREDENTIALS = {
+    ".docker/config.json": "DOCKER-CANARY",
+    ".kube/config": "KUBE-CANARY",
+    ".npmrc": "NPMRC-CANARY",
+    ".pypirc": "PYPIRC-CANARY",
+    ".gnupg/private-keys-v1.d/key": "GNUPG-CANARY",
+    ".azure/accessTokens.json": "AZURE-CANARY",
+    ".config/op/config": "OP-CANARY",
+    ".cargo/credentials": "CARGO-CANARY",
+    ".cargo/credentials.toml": "CARGO-TOML-CANARY",
+    ".m2/settings.xml": "MAVEN-CANARY",
+    ".gradle/gradle.properties": "GRADLE-CANARY",
+    ".codex/auth.json": "CODEX-CANARY",
+    ".vault-token": "VAULT-CANARY",
+    ".terraform.d/credentials.tfrc.json": "TERRAFORM-CANARY",
+    ".config/containers/auth.json": "CONTAINERS-CANARY",
+    ".gem/credentials": "GEM-CANARY",
+    ".config/hub": "HUB-CANARY",
+    ".cache/huggingface/token": "HF-CANARY",
+}
+# Committed, so they are in the run's worktree as well as the target repository.
+REPO_KEYS = {"deploy.key": "KEY-CANARY", "certs/signing.p12": "P12-CANARY", "cert.pfx": "PFX-CANARY",
+             "id_ed25519": "ED25519-CANARY", "keys/id_rsa": "RSA-CANARY", "id_ecdsa.pub": "ECDSA-CANARY"}  # fmt: skip
+
+
+def test_inspect_commands_cannot_read_host_or_repo_credentials(
+    tmp_path: Path, fake_claude, srt: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    for name, canary in HOME_CREDENTIALS.items():
+        (home / name).parent.mkdir(parents=True, exist_ok=True)
+        (home / name).write_text(f"{canary}\n", encoding="utf-8")
+    (home / ".gitconfig").write_text("READABLE-CANARY\n", encoding="utf-8")  # control: not a credential
+    monkeypatch.setenv("HOME", str(home))
+    reads = " ".join(f"$$HOME/{name}" for name in [*HOME_CREDENTIALS, ".gitconfig"])
+    keys = " ".join(f"../../../{name}" for name in REPO_KEYS)  # the target repo, from the run's worktree
+    makefile = f"test:\n\t@for f in {reads} {keys} {' '.join(REPO_KEYS)}; do cat $$f 2>/dev/null; done; true\n"
+    root = make_repo(tmp_path / "target", makefile=makefile)
+    for name, canary in REPO_KEYS.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(f"{canary}\n", encoding="utf-8")
+    git(root, "add", *REPO_KEYS)
+    git(root, "commit", "-q", "-m", "commit key files")
+    write_proposal(root, which=lambda tool: f"/usr/bin/{tool}")
+    fake_claude()
+    result = inspect(root)
+    assert result.exit_code == 0, result.output
+    [test] = [c for c in commands_file(root) if c.command == "make test"]
+    assert test.status == "passed", test
+    assert "READABLE-CANARY" in (test.output_tail or ""), "the command ran and could read an ordinary file"
+    leaked = [c for c in [*HOME_CREDENTIALS.values(), *REPO_KEYS.values()] if c in (test.output_tail or "")]
+    assert leaked == [], f"inspect commands read: {leaked}"
