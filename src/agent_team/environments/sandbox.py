@@ -68,6 +68,12 @@ def git_write_paths(git_dir: Path, run_id: str) -> list[Path]:
     ]
 
 
+def git_pointer_files(git_dir: Path, worktree: Path) -> list[Path]:
+    """The files under the worktree's admin dir that point git at a repository: deny writes to each that exists."""
+    admin = git_dir / "worktrees" / worktree.name
+    return [admin / name for name in ("commondir", "gitdir", "config.worktree") if (admin / name).exists()]
+
+
 def build_settings(
     spec: EnvironmentSpec, *, run_id: str, worktree: Path, git_dir: Path, tmp_dir: Path, home: Path
 ) -> dict[str, object]:
@@ -80,7 +86,9 @@ def build_settings(
         "filesystem": {
             "denyRead": [str(home / name) for name in DENY_READ_HOME],
             "allowWrite": [str(worktree), str(tmp_dir), *(str(p) for p in git_write_paths(git_dir, run_id))],
-            "denyWrite": [str(worktree / ".git")],
+            # The worktree's .git file and its admin dir's commondir and gitdir name the repository git
+            # opens; rewritten, the orchestrator's own git (outside srt) would read a config the agent wrote.
+            "denyWrite": [str(worktree / ".git"), *(str(p) for p in git_pointer_files(git_dir, worktree))],
         },
     }
 
