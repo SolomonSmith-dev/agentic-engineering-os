@@ -23,6 +23,12 @@ dev = [
     "jsonschema>=4.23",
     "pytest>=8",
 ]
+# Baseline A of the step 13 eval, never a default dependency: `uv sync --group dev --group baseline`.
+baseline = [
+    "mini-swe-agent==2.4.6",
+    # mini-swe-agent's model client; held at a release more than two weeks old when this was locked.
+    "litellm==1.104.2",
+]
 
 [build-system]
 requires = ["hatchling"]
