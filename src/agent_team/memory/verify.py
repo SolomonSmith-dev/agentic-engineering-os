@@ -150,6 +150,7 @@ def run_command(
         raise ValueError("refusing to run a repository command outside srt")
     env = {k: base_env[k] for k in ENV_ALLOWLIST if k in base_env}
     env["CI"] = "1"  # no watch modes, prompts or interactive reporters
+    env["PYTHONDONTWRITEBYTECODE"] = "1"  # a dry run leaves no .pyc for a later same-second edit to collide with
     env["XDG_CACHE_HOME"] = str(sandbox.tmp_dir / "cache")  # tool caches land where srt allows writes
     argv = sandbox.wrap(["/bin/sh", "-c", candidate.command])
     base = {"kind": candidate.kind, "command": candidate.command, "source": candidate.source,
