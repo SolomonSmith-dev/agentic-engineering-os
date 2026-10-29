@@ -2,7 +2,7 @@
 
 `agent-team` runs Claude Code workers and an independent reviewer inside sandboxed git worktrees, records every run in SQLite, and gates pull requests on the reviewer's verdict.
 
-Status: build-order steps 1 to 12 of 15 are merged, version 0.1.0. The CLI answers `--version`, checks the host (`agent-team doctor`), discovers and configures a target repository (`agent-team init`, `agent-team configure`), builds repository memory with the archaeologist (`agent-team inspect`), runs one canonical agent end to end (`agent-team run --agent`, on Claude Code or, for the reviewer, Codex), runs the bug-fix workflow from reproduction to a draft PR (`agent-team run --workflow bug-fix`, `agent-team resume`), reads the run record (`agent-team trace`), sweeps stale run worktrees (`agent-team env sweep`), validates `canonical/` against the pydantic schemas (`agent-team validate`) and exports them as JSON Schema (`agent-team schema export`). See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the target design and build order.
+Status: build-order steps 1 to 13 of 15 are merged, version 0.1.0. The CLI answers `--version`, checks the host (`agent-team doctor`), discovers and configures a target repository (`agent-team init`, `agent-team configure`), builds repository memory with the archaeologist (`agent-team inspect`), runs one canonical agent end to end (`agent-team run --agent`, on Claude Code or, for the reviewer, Codex), runs the bug-fix workflow from reproduction to a draft PR (`agent-team run --workflow bug-fix`, `agent-team resume`), compares the team with two single-agent baselines on ten tasks with hidden verifiers (`agent-team eval run`, `agent-team eval report`, `agent-team eval --last`; no paid eval has been run yet), reads the run record (`agent-team trace`), sweeps stale run worktrees (`agent-team env sweep`), validates `canonical/` against the pydantic schemas (`agent-team validate`) and exports them as JSON Schema (`agent-team schema export`). See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the target design and build order.
 
 ## Docs
 
@@ -183,6 +183,35 @@ agent-team run --agent independent-reviewer --runtime codex \
 - Codex reports tokens, not dollars, and has no budget flag. Cost is recorded only when the registry entry has a `cost` (none does yet), and `--max-budget-usd` is then checked after the run ends; otherwise `--timeout` is the only cap. The run record's transition note lists every capability the Codex runtime ran without.
 - `~/.codex/**`, and your `CODEX_HOME` if you set one, are denied in the sandbox for the whole run, so `--runtime codex` relies on `CODEX_API_KEY`, not a `codex login`. Codex runs with an empty `CODEX_HOME` in the run's temp directory.
 
+## Eval: the team against two baselines
+
+`agent-team eval` is build-order step 13: it runs the same tasks through three arms and prints the section 13 metrics side by side, so the gate after step 13 is decided by numbers.
+
+| Arm | What runs | Model |
+| --- | --- | --- |
+| `baseline-a` | mini-swe-agent 2.4.6, one shot, inside srt | `claude-opus-5-5` (the `high-reasoning` class) |
+| `baseline-b` | one `claude -p` session: the implementer agent once, no plan, reviewer or orchestrator checks | the same |
+| `treatment` | `agent-team run --workflow bug-fix` | implementer `claude-sonnet-5-5`, reviewer `claude-opus-5-5` |
+
+```bash
+agent-team eval run                     # the dry run: the matrix, the caps, the worst case; calls no model
+agent-team eval run --execute           # the same plan, for real (refused for a plan never dry-run)
+agent-team eval report                  # the latest eval's metrics and verdict; --eval <id> for another
+agent-team eval run --arms baseline-b,treatment --tasks lru-recency,report-median --runs 1
+agent-team eval --last -C /path/to/target   # record that repository's last `run --workflow` against the baseline
+```
+
+- **Tasks.** `evals/tasks/*.yaml`, Harbor-shaped: `repo`, `ref`, `instruction`, `kind`, a hidden `verifier`, `existing_tests` (for regressions) and `planned_files` (for unnecessary diff). The ten shipped tasks are tiny Python projects under `evals/fixtures/<task>/repo` (3 locate-bug, 3 fix-bug, 2 small-feature, 2 repair-failing-test), each committed into a fresh repository with a fixed identity and date, so it lands on exactly the task's `ref`; a fixture that changed is refused. A task may instead name a git URL or path and a ref: that is how the private 30-task set plugs in. History past the ref and every remote are removed from the copy.
+- **Fresh copy, hidden verifier.** Every cell (task x arm x run) gets its own copy. The verifier's files (`evals/fixtures/<task>/verifier`) are copied in only after the arm exits, into a fresh export of the arm's final tree, and the verifier and the existing tests run there inside srt with no network. While an arm runs, its sandbox cannot read the task files, the fixtures, the verifier files or `.agent-team/eval/` (earlier cells, the results).
+- **Budgets.** `--max-budget-usd-per-task` (default `1.00`) caps one cell, every model call in it together: mini-swe-agent's `--cost-limit`, Claude Code's `--max-budget-usd`, and for the treatment each agent call gets only what is left of the cell's cap. `--max-total-usd` (default `15.00`) caps the eval, probe included: a cell starts only when the spend so far plus its cap fits, and the cells that do not are recorded `not_run` with the reason. A runtime checks its cap between turns, so a cell can overshoot by one turn; the result says so (`over_cap`). `--runs` defaults to 1: 10 tasks x 3 arms x 3 runs at $1.00 each is twice the total cap.
+- **The default matrix.** 10 tasks x 3 arms x 1 run is 30 cells: worst case $30.10 with the probe, so the $15.00 total cap holds and, in the worst case, 14 cells start. The dry run prints an expected figure only once this store holds recorded costs for every arm.
+- **Probe.** Before the first paid cell, the eval runs the live reviewer check in-process: the reviewer on the cheap class (`claude-haiku-5-5`, at most $0.10) must run a Bash command inside srt, or no cell runs. It catches a worker with no shell (the step 11 cgroup failure). `--skip-probe` skips it, for example right after `AGENT_TEAM_LIVE=1 uv run pytest -q -m live`.
+- **mini-swe-agent needs an API key.** It calls the Anthropic API through litellm, which reads `ANTHROPIC_API_KEY`; it cannot use a Claude Code login. Without the key (or without `uv sync --group dev --group baseline`, which installs it; it is never a default dependency) `baseline-a` is refused before anything runs, and the eval refuses until you set the key or leave the arm out with `--arms baseline-b,treatment`. With the key set, the Claude arms also run with it (`--bare`), as in CI. Known gap: inside mini-swe-agent the key is in the environment its commands see.
+- **Results.** `.agent-team/eval/results.jsonl`, one record per line (`eval`, `probe`, `cell`, `dry_run`, `field`). Each cell's directory moves to `.agent-team/eval/work/<eval-id>/<task>--<arm>--<run>/` afterwards; `agent-team trace -C <that>/repo` reads its run record.
+- **Report.** Per arm: completion rate (verifier passes), test pass rate and regressions (existing tests), retries, wall time, tokens, dollars, human interventions (RESUME transitions, 0 in an automated eval), unnecessary diff lines (outside `planned_files`), budget aborts, and the headline: cost per successful task beside interventions per successful task. Review defects and context consumed print "not measured" with the reason, as does any metric an arm's records cannot support. The decision rule's verdict compares the treatment with the best baseline on the task-runs every compared arm ran.
+
+The treatment opens no PR in the eval: the task repository has no remote and the eval passes no `gh`, so its runs end `blocked` at HUMAN_DECISION by design; completion is the verifier's verdict, not the run's outcome.
+
 ## Environments
 
 Each run gets its own git worktree at `.agent-team/worktrees/<run-id>/` on branch `agent-team/<run-id>`, cut from `HEAD`. Gitignored files listed in `.worktreeinclude` (gitignore syntax, the same convention Claude Code uses) are copied in; tracked files, symlinks and `.agent-team/` never are. Each worktree gets a port slot, exported as `AGENT_TEAM_PORT_OFFSET` (slot × `ports.block_size`), so parallel dev servers do not collide.
@@ -209,6 +238,7 @@ agent-team schema export --out build/schemas
 ```bash
 uv sync --group dev
 uv run pytest -q
+uv sync --group dev --group baseline   # adds mini-swe-agent, for the eval's baseline-a only
 ```
 
 ## License

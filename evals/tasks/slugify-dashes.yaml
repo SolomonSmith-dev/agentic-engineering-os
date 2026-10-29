@@ -1,0 +1,18 @@
+# Location given.
+id: slugify-dashes
+kind: fix-bug
+repo: fixture:slugify-dashes
+ref: 733c627b548bcd6f3999959543dad770432b7c41 # the commit the fixture materializes to; a changed fixture is refused
+instruction: "`textutil.slug.slugify` in textutil/slug.py leaves leading, trailing and repeated dashes: `slugify('  Hello,  World! ')` returns `--hello---world--` but should return `hello-world`, as its docstring says. Fix it."
+test_command: python3 -m unittest
+existing_tests:
+  - python3 -m unittest tests.test_textutil.TextutilTest.test_simple_slug
+  - python3 -m unittest tests.test_textutil.TextutilTest.test_accents_drop
+  - python3 -m unittest tests.test_textutil.TextutilTest.test_wrap
+planned_files:
+  - textutil/slug.py
+  - tests/** # a regression test is planned work
+verifier: # hidden: copied over the agent's tree only after the arm ends
+  command: python3 -m unittest tests.test_hidden_slug
+  files: ../fixtures/slugify-dashes/verifier
+  timeout_s: 120

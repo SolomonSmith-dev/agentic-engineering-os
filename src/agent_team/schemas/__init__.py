@@ -12,6 +12,7 @@ from agent_team.schemas.agent import AgentSpec, Capabilities
 from agent_team.schemas.bootstrap import DetectedCommand, Proposal, RepoConfig
 from agent_team.schemas.doctor import DoctorReport
 from agent_team.schemas.environment import EnvironmentSpec, NetworkPolicy, PortPolicy
+from agent_team.schemas.eval import CellResult, EvalTask, Verifier
 from agent_team.schemas.policy import PolicySpec, RedactionRule
 from agent_team.schemas.registry import ModelEntry, RegistrySpec
 from agent_team.schemas.runs import (
@@ -53,10 +54,12 @@ __all__ = [
     "SCHEMAS",
     "AgentSpec",
     "Capabilities",
+    "CellResult",
     "Checkpoint",
     "DetectedCommand",
     "DoctorReport",
     "EnvironmentSpec",
+    "EvalTask",
     "Implementation",
     "ModelEntry",
     "NetworkPolicy",
@@ -76,6 +79,7 @@ __all__ = [
     "ToolResultStatus",
     "ToolSpec",
     "Transition",
+    "Verifier",
     "WorkflowSpec",
     "json_schema",
 ]

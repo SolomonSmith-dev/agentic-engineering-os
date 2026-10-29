@@ -19,6 +19,7 @@ This page is the JSON Schema's shape. `agent-team validate` checks the same shap
 | `tier` | `"worktree"` \| `"srt"` | yes |  |  |  |
 | `network` | [NetworkPolicy](#networkpolicy) | no |  |  |  |
 | `ports` | [PortPolicy](#portpolicy) | no |  |  |  |
+| `deny_read` | list of string | no |  | each pattern `^(/\|~/)\S` | Paths srt keeps unreadable, on top of the credentials it always denies. The eval (step 13) adds its tasks, fixtures and results here so no arm can read a hidden verifier. |
 
 ## NetworkPolicy
 

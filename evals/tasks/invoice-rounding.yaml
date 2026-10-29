@@ -1,0 +1,18 @@
+# Symptom only: the rounding mode in invoice/money.py, two modules away from the invoice.
+id: invoice-rounding
+kind: locate-bug
+repo: fixture:invoice-rounding
+ref: b625a6ddb50cf1d2e82dbd98254727f5c022cd9e # the commit the fixture materializes to; a changed fixture is refused
+instruction: "A customer's invoice for 3 widgets at $0.375 each shows a total of $1.12. Our pricing policy says amounts round to the cent with halves rounding up, so it should be $1.13. Find the cause and fix it."
+test_command: python3 -m unittest
+existing_tests:
+  - python3 -m unittest tests.test_invoice.InvoiceTest.test_total_of_whole_cents
+  - python3 -m unittest tests.test_invoice.InvoiceTest.test_discount
+  - python3 -m unittest tests.test_invoice.InvoiceTest.test_negative_quantity_is_refused
+planned_files:
+  - invoice/money.py
+  - tests/** # a regression test is planned work
+verifier: # hidden: copied over the agent's tree only after the arm ends
+  command: python3 -m unittest tests.test_hidden_rounding
+  files: ../fixtures/invoice-rounding/verifier
+  timeout_s: 120
