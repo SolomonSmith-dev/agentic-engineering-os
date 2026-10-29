@@ -224,6 +224,13 @@ def run_command(env: Environment, kind: str, command: str, *, timeout_s: float, 
     if not env.sandbox.sandboxed:
         raise WorkspaceError("srt is absent; the orchestrator runs no command outside the sandbox")
     child_env = env.sandbox.env({k: base_env[k] for k in ENV_ALLOWLIST if k in base_env})
+    # Tool caches land where srt allows writes: the sandbox mounts home read-only, so uv's default
+    # `~/.cache/uv` fails to open and `uv run <anything>` exits 2 before the command runs (seen on
+    # the first real run; the implementer's `--no-cache` reproduction command had masked it).
+    cache = env.sandbox.tmp_dir / "cache"
+    child_env["XDG_CACHE_HOME"] = str(cache)
+    child_env["UV_CACHE_DIR"] = str(cache / "uv")
+    child_env["CI"] = "1"  # no watch modes, prompts or interactive reporters
     start = time.monotonic()
     proc = subprocess.Popen(
         env.sandbox.wrap(["/bin/sh", "-c", command]),

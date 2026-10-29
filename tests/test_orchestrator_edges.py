@@ -529,3 +529,17 @@ def test_a_non_utf8_config_yaml_is_reported_before_the_run(repo: Path, monkeypat
     result = CliRunner().invoke(app, ["run", "--workflow", "bug-fix", "--repo", str(repo), "--canonical", str(CANONICAL), TASK])
     assert result.exit_code == 2 and "config.yaml is unreadable (UnicodeDecodeError)" in result.output
     assert RunStore.open(repo, create=False) is None, "refused before recording a run"
+
+
+def test_orchestrator_commands_keep_tool_caches_inside_the_sandbox(tmp_path: Path) -> None:
+    """srt mounts home read-only, so uv's default ~/.cache/uv must never be the cache a check uses."""
+    fake = tmp_path / "srt"
+    fake.write_text(FAKE_SRT, encoding="utf-8")
+    fake.chmod(0o755)
+    sandbox_tmp = tmp_path / "sandbox-tmp"
+    sandbox_tmp.mkdir()
+    env = SimpleNamespace(path=tmp_path, sandbox=Sandbox(srt=str(fake), settings_path=tmp_path / "s.json", tmp_dir=sandbox_tmp, port_offset=0))
+    result = run_command(env, "test", 'echo "uv=$UV_CACHE_DIR xdg=$XDG_CACHE_HOME ci=$CI"', timeout_s=10,  # type: ignore[arg-type]
+                         base_env={"PATH": os.environ["PATH"], "HOME": str(tmp_path), "UV_CACHE_DIR": "/elsewhere"})  # fmt: skip
+    assert result.passed, result.output
+    assert f"uv={sandbox_tmp / 'cache' / 'uv'} xdg={sandbox_tmp / 'cache'} ci=1" in result.output
