@@ -542,3 +542,15 @@ def test_orchestrator_commands_write_no_bytecode(tmp_path: Path) -> None:
                          base_env={"PATH": os.environ["PATH"]})  # fmt: skip
     assert result.passed, result.output
     assert not (tmp_path / "__pycache__").exists(), "the check compiled calc.py to disk"
+def test_orchestrator_commands_keep_tool_caches_inside_the_sandbox(tmp_path: Path) -> None:
+    """srt mounts home read-only, so uv's default ~/.cache/uv must never be the cache a check uses."""
+    fake = tmp_path / "srt"
+    fake.write_text(FAKE_SRT, encoding="utf-8")
+    fake.chmod(0o755)
+    sandbox_tmp = tmp_path / "sandbox-tmp"
+    sandbox_tmp.mkdir()
+    env = SimpleNamespace(path=tmp_path, sandbox=Sandbox(srt=str(fake), settings_path=tmp_path / "s.json", tmp_dir=sandbox_tmp, port_offset=0))
+    result = run_command(env, "test", 'echo "uv=$UV_CACHE_DIR xdg=$XDG_CACHE_HOME ci=$CI"', timeout_s=10,  # type: ignore[arg-type]
+                         base_env={"PATH": os.environ["PATH"], "HOME": str(tmp_path), "UV_CACHE_DIR": "/elsewhere"})  # fmt: skip
+    assert result.passed, result.output
+    assert f"uv={sandbox_tmp / 'cache' / 'uv'} xdg={sandbox_tmp / 'cache'} ci=1" in result.output

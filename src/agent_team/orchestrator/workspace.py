@@ -228,6 +228,13 @@ def run_command(env: Environment, kind: str, command: str, *, timeout_s: float, 
     # and size, so a fix written in the same second as a check that compiled the old file, at the
     # same size, would be judged against the stale .pyc. Seen in the eval fixture (calc-add).
     child_env["PYTHONDONTWRITEBYTECODE"] = "1"
+    # Tool caches land where srt allows writes: the sandbox mounts home read-only, so uv's default
+    # `~/.cache/uv` fails to open and `uv run <anything>` exits 2 before the command runs (seen on
+    # the first real run; the implementer's `--no-cache` reproduction command had masked it).
+    cache = env.sandbox.tmp_dir / "cache"
+    child_env["XDG_CACHE_HOME"] = str(cache)
+    child_env["UV_CACHE_DIR"] = str(cache / "uv")
+    child_env["CI"] = "1"  # no watch modes, prompts or interactive reporters
     start = time.monotonic()
     proc = subprocess.Popen(
         env.sandbox.wrap(["/bin/sh", "-c", command]),

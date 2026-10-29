@@ -34,3 +34,19 @@ uv sync --group dev
 uv run pytest -q
 uv run agent-team --version
 ```
+
+<!-- agent-team:begin -->
+## agent-team
+
+Managed by `agent-team configure` from `.agent-team/proposal.yaml`. Edit the proposal and re-run
+`agent-team configure` instead of editing this block; text outside it is never changed.
+
+- Default branch `main`; protected branches: unknown.
+- Never push to the default branch or a protected branch: work on a branch and leave it for a human; do not open pull requests.
+- Autonomy ceiling A3.
+- `.agent-team/` holds agent-team runtime state and is gitignored; never commit it.
+- Never read, print or commit secrets (`.env*`, key files).
+- Commands (tool found by `agent-team init`; nothing was run to check them):
+  - build: `uv build`
+  - test: `uv run pytest`
+<!-- agent-team:end -->
