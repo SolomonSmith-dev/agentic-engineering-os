@@ -1,0 +1,18 @@
+# Location given.
+id: lru-recency
+kind: fix-bug
+repo: fixture:lru-recency
+ref: 0a51d423388c2e269a5543884385a049236e55bd # the commit the fixture materializes to; a changed fixture is refused
+instruction: "In cachekit/lru.py, `LRUCache.get` does not mark the key it reads as recently used, so the next `put` over capacity can evict a key that was just read. Reading a key should make it the most recently used; reading a missing key should change nothing. Fix it."
+test_command: python3 -m unittest
+existing_tests:
+  - python3 -m unittest tests.test_lru.LRUTest.test_evicts_oldest_put
+  - python3 -m unittest tests.test_lru.LRUTest.test_default
+  - python3 -m unittest tests.test_lru.LRUTest.test_bad_capacity
+planned_files:
+  - cachekit/lru.py
+  - tests/** # a regression test is planned work
+verifier: # hidden: copied over the agent's tree only after the arm ends
+  command: python3 -m unittest tests.test_hidden_lru
+  files: ../fixtures/lru-recency/verifier
+  timeout_s: 120

@@ -1,0 +1,17 @@
+# The verifier restores the original test file and adds jobs that cannot be compared.
+id: queue-fifo-ties
+kind: repair-failing-test
+repo: fixture:queue-fifo-ties
+ref: d3ee080b8d1add3fcb3905bbaa2c53d313e17434 # the commit the fixture materializes to; a changed fixture is refused
+instruction: "`python3 -m unittest tests.test_queue` fails on `test_equal_priority_is_fifo`. Make it pass. The test is right: do not change it."
+test_command: python3 -m unittest
+existing_tests:
+  - python3 -m unittest tests.test_queue.QueueTest.test_priority_order
+  - python3 -m unittest tests.test_queue.QueueTest.test_empty
+planned_files:
+  - jobs/queue.py
+  - tests/** # a regression test is planned work
+verifier: # hidden: copied over the agent's tree only after the arm ends
+  command: python3 -m unittest tests.test_queue tests.test_hidden_queue
+  files: ../fixtures/queue-fifo-ties/verifier
+  timeout_s: 120

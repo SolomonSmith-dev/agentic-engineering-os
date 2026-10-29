@@ -223,6 +223,9 @@ def normalize(
         if structured_error is not None:
             status = "failed"
     tail = redact_text(stderr[-STDERR_TAIL_CHARS:], redaction).strip() if status != "succeeded" and stderr else None
+    # The result event's token counts (input, output, cache read and creation); nested objects are skipped.
+    raw_usage = result.get("usage")
+    usage = {k: v for k, v in raw_usage.items() if isinstance(v, int)} if isinstance(raw_usage, dict) else {}
     return AdapterResult(
         status=status,
         runtime=RUNTIME,
@@ -236,6 +239,7 @@ def normalize(
         session_id=result.get("session_id"),
         tool_calls=len(parser.calls),
         permission_denials=denials,
+        usage=usage or None,
         exit_code=exit_code,
         stderr_tail=tail or None,
     )

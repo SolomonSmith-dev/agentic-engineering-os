@@ -21,7 +21,7 @@ from agent_team.adapters.claude import StreamParser, build_invocation, compile_a
 from agent_team.adapters.claude.hook import check
 from agent_team.canonical import parse_file
 from agent_team.cli import app
-from agent_team.environments import acquire
+from agent_team.environments import acquire, srt_path
 from agent_team.environments.sandbox import Sandbox
 from agent_team.runs import RunStore
 from agent_team.schemas import AgentSpec, PolicySpec
@@ -420,8 +420,20 @@ hook = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
 probe = {{"tool_name": "Bash", "tool_input": {{"command": "cat .env"}}}}
 hook_run = subprocess.run(shlex.split(hook), input=json.dumps(probe), capture_output=True, text=True)
 prompt = sys.stdin.read()
+def readable(path):
+    try:
+        with open(path, errors="replace") as handle:
+            return handle.read()
+    except OSError:
+        return None
+# What a Bash command could reach with a path built at run time: the hook never sees these names.
+reads = {{name: readable(path) for name, path in {{
+    "env": "../../../" + ".e" + "nv", "key": "../../../deploy" + ".key", "runs_db": "../../runs" + ".db",
+    "docker": os.path.expanduser("~/.dock" + "er/config.json"),
+    "claude_home": os.path.expanduser("~/.claude/settings.json"),
+}}.items()}}
 seen = {{"argv": argv, "env": dict(os.environ), "stdin": prompt, "cwd": os.getcwd(),
-         "hook_exit": hook_run.returncode, "hook_stderr": hook_run.stderr}}
+         "hook_exit": hook_run.returncode, "hook_stderr": hook_run.stderr, "reads": reads}}
 with open(os.path.join(os.environ["TMPDIR"], "fake-claude.json"), "w") as out:
     json.dump(seen, out)
 
@@ -514,6 +526,34 @@ def test_run_reviewer_end_to_end(repo: Path, fake_path) -> None:
     assert not (repo / ".agent-team" / "lock").exists(), "the lock is released"
     assert (repo / ".agent-team" / "compiled" / run.run_id / "agents" / "independent-reviewer.md").is_file()
     assert not (repo / ".claude").exists(), "nothing is written into the target repo's .claude/"
+
+
+def test_srt_keeps_a_sandboxed_claude_run_out_of_protected_files(
+    repo: Path, fake_path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Paths built at run time get past the hook; srt's denyRead is what stops them (#28, T3)."""
+    if srt_path() is None:
+        if os.environ.get("AGENT_TEAM_REQUIRE_SRT") == "1":
+            pytest.fail("AGENT_TEAM_REQUIRE_SRT=1 but srt is not on PATH")
+        pytest.skip("srt not installed; this checks srt's denyRead")
+    home = tmp_path / "home"
+    (home / ".docker").mkdir(parents=True)
+    (home / ".docker" / "config.json").write_text("DOCKER-CANARY\n", encoding="utf-8")
+    (home / ".claude").mkdir()
+    (home / ".claude" / "settings.json").write_text("CLAUDE-HOME-READABLE\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    (repo / "deploy.key").write_text("KEY-CANARY\n", encoding="utf-8")
+    git(repo, "add", "deploy.key")
+    git(repo, "commit", "-q", "-m", "add a key file")
+    fake_path()
+    result = invoke_run(repo)
+    assert result.exit_code == 0, result.output
+    run, _, _ = only_run(repo)
+    seen = json.loads((repo / ".agent-team" / "tmp" / run.run_id / "fake-claude.json").read_text())
+    reads = seen["reads"]
+    assert reads["claude_home"] == "CLAUDE-HOME-READABLE\n", "the worker needs its own login"
+    leaked = {name: text for name, text in reads.items() if name != "claude_home" and text is not None}
+    assert leaked == {}, f"a sandboxed Claude run read protected files: {sorted(leaked)}"
 
 
 def test_run_budget_abort_is_recorded_with_reason(repo: Path, fake_path) -> None:

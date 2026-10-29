@@ -1,0 +1,17 @@
+# The verifier restores the original test file, so editing the test does not pass.
+id: temperature-conversion
+kind: repair-failing-test
+repo: fixture:temperature-conversion
+ref: 258ede81fd4f1c824a83b61b87dfbefef3537e52 # the commit the fixture materializes to; a changed fixture is refused
+instruction: "`python3 -m unittest tests.test_temperature` fails. Make it pass. The test is right: do not change it."
+test_command: python3 -m unittest
+existing_tests:
+  - python3 -m unittest tests.test_temperature.TemperatureTest.test_to_fahrenheit
+  - python3 -m unittest tests.test_length.LengthTest.test_inch
+planned_files:
+  - units/temperature.py
+  - tests/** # a regression test is planned work
+verifier: # hidden: copied over the agent's tree only after the arm ends
+  command: python3 -m unittest tests.test_temperature tests.test_hidden_temperature
+  files: ../fixtures/temperature-conversion/verifier
+  timeout_s: 120

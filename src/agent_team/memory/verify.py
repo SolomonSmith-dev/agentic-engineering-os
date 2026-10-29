@@ -28,8 +28,7 @@ from pathlib import Path
 
 from agent_team.adapters.claude.compile import DEFAULT_PROTECTED, PROTECTED_FILES
 from agent_team.adapters.claude.invoke import ENV_ALLOWLIST
-from agent_team.adapters.codex.compile import srt_deny_read
-from agent_team.environments.sandbox import Sandbox, extend_settings, srt_path
+from agent_team.environments.sandbox import Sandbox, extend_settings, srt_deny_read, srt_path
 from agent_team.runs.redact import redact_text
 from agent_team.runs.store import RunStore
 from agent_team.schemas.memory import CommandVerification, VerificationStatus

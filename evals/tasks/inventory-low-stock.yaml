@@ -1,0 +1,18 @@
+# A new method with an ordering rule and a guard.
+id: inventory-low-stock
+kind: small-feature
+repo: fixture:inventory-low-stock
+ref: 3d9dd0fd8ed550729ec0bf98dfe00831e6b15e45 # the commit the fixture materializes to; a changed fixture is refused
+instruction: "Add `Inventory.low_stock(threshold)` to inventory/store.py: it returns (name, quantity) pairs for every item whose quantity is below `threshold`, lowest quantity first and ties by name. A threshold below 1 raises ValueError."
+test_command: python3 -m unittest
+existing_tests:
+  - python3 -m unittest tests.test_store.StoreTest.test_add_remove
+  - python3 -m unittest tests.test_store.StoreTest.test_overdraw
+  - python3 -m unittest tests.test_store.StoreTest.test_items_sorted
+planned_files:
+  - inventory/store.py
+  - tests/** # a regression test is planned work
+verifier: # hidden: copied over the agent's tree only after the arm ends
+  command: python3 -m unittest tests.test_hidden_low_stock
+  files: ../fixtures/inventory-low-stock/verifier
+  timeout_s: 120

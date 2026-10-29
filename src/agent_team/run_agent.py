@@ -223,7 +223,11 @@ def run_agent(
                 sandboxed=environment.sandbox.sandboxed,
                 focus_brief=brief(prompt) if focus else None,
                 lessons_section=render_prompt_section(for_prompt(root, agent.name)),
+                keep=(environment.path, environment.sandbox.tmp_dir),
             )
+            if environment.sandbox.sandboxed:
+                # The hook is a tripwire; srt is what keeps a Bash command from reading .env or a key file.
+                extend_settings(environment.sandbox, deny_read=compiled.deny_read)
             notes = [environment.note(env_spec.name), resolved.note()]
             if replaced is not None:
                 notes.append(f"took over a stale lock from run {replaced.run_id} (pid {replaced.pid})")

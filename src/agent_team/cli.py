@@ -2,6 +2,8 @@
 
 import json
 import os
+import shutil
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -14,17 +16,44 @@ from agent_team.adapters.codex.invoke import API_KEY_ENV, CodexUnavailableError,
 from agent_team.bootstrap import BootstrapError, apply_plan, plan_configure, render_summary, write_proposal
 from agent_team.canonical import validate_tree
 from agent_team.doctor import _which, build_report, render_table
-from agent_team.environments import AllocatorError, LockHeldError, sweep
+from agent_team.environments import AllocatorError, LockHeldError, srt_path, sweep
 from agent_team.focus import analyze as analyze_focus
+from agent_team.eval import (
+    ARM_DESCRIPTIONS,
+    BASELINE_CLASS,
+    ArmContext,
+    EvalError,
+    EvalStore,
+    EvalStoreError,
+    FieldError,
+    TaskError,
+    baseline_model,
+    build_plan,
+    estimate,
+    hidden_paths,
+    load_tasks,
+    new_eval_id,
+    prepare_canonical,
+    record_last,
+    refusal,
+    render_field,
+    render_plan,
+    render_report,
+    run_eval,
+    treatment_models,
+)
+from agent_team.eval.store import RESULTS
 from agent_team.memory import DEFAULT_COMMAND_TIMEOUT_S, MEMORY_DIR, InspectError, inspect_repo, render_memory_summary
 from agent_team import lessons as lessons_mod
 from agent_team.orchestrator import OrchestratorError, default_executor_factory, resume_workflow, run_workflow
-from agent_team.run_agent import RunAgentError, run_agent
+from agent_team.routing import REGISTRY_PATH, RegistryError, default_registry_path, load_registry, resolve_model
+from agent_team.run_agent import RunAgentError, load_canonical, run_agent
 from agent_team.runs import RunStore, RunStoreError, UnknownRunError, render_run_list, render_trace
 from agent_team.runs.store import STATE_DIR, repo_root
 from agent_team.schemas import SCHEMAS, RunRecord, json_schema
 from agent_team.bootstrap.configure import CONFIG_NAME
 from agent_team.schemas.bootstrap import RepoConfig
+from agent_team.schemas.eval import ARMS, ArmPlan, Caps, DryRunRecord
 
 # Runtimes `agent-team run --runtime` accepts; codex runs the independent reviewer only (step 12).
 RUNTIMES: tuple[Literal["claude", "codex"], ...] = ("claude", "codex")
@@ -430,6 +459,168 @@ def inspect_cmd(
         typer.echo(f"wrote {MEMORY_DIR / path.name}")
     typer.echo("")
     typer.echo(render_memory_summary(repo))
+
+
+eval_app = typer.Typer(
+    help="The step 13 eval: Harbor-shaped tasks, two baselines and the team, a hidden verifier, the section 13 report.",
+    invoke_without_command=True,
+)
+app.add_typer(eval_app, name="eval")
+
+
+def _csv(values: list[str]) -> list[str]:
+    return [v.strip() for value in values for v in value.split(",") if v.strip()]
+
+
+@eval_app.callback()
+def eval_main(
+    ctx: typer.Context,
+    last: bool = typer.Option(
+        False, "--last", help="Record this repository's last workflow run against the baseline (no verifier, no model)."
+    ),
+    repo: Path = typer.Option(Path("."), "--repo", "-C", help="Repository whose run record --last reads."),
+) -> None:
+    """Run the eval (eval run), print its report (eval report), or record the last real run (eval --last)."""
+    if ctx.invoked_subcommand is not None:
+        return
+    if not last:
+        typer.echo(ctx.get_help())
+        return
+    try:
+        record, new, baseline = record_last(repo)
+    except (FieldError, RunStoreError, EvalStoreError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(render_field(record, baseline))
+    typer.echo(f"{'recorded in' if new else 'already in'} .agent-team/eval/{RESULTS}")
+
+
+@eval_app.command("run")
+def eval_run(
+    tasks: list[str] = typer.Option([], "--tasks", help="Task ids to run (comma-separated or repeated); default all."),
+    arms: list[str] = typer.Option([], "--arms", help=f"Arms to run, from {', '.join(ARMS)}; default all."),
+    runs: int = typer.Option(1, "--runs", min=1, help="Runs per task per arm. Section 13 asks for 3; 1 fits the $15 cap."),
+    per_task: float = typer.Option(
+        1.00, "--max-budget-usd-per-task", min=0.05, help="Cap on one cell (one task, one arm, one run), all its calls together."
+    ),
+    total: float = typer.Option(15.00, "--max-total-usd", min=0.10, help="Cap on the whole eval, probe included."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the matrix and the estimate; call no model."),
+    execute: bool = typer.Option(False, "--execute", help="Run it and spend; refused for a plan that was never dry-run."),
+    skip_probe: bool = typer.Option(False, "--skip-probe", help="Skip the sandboxed-Bash probe before the first cell."),
+    baseline: str | None = typer.Option(
+        None, "--baseline-model", help=f"Registry model for both baselines; default the {BASELINE_CLASS} class's."
+    ),
+    timeout: float = typer.Option(1800, "--timeout", min=1, help="Kill each agent call (or mini-swe-agent) after this many seconds."),
+    tasks_dir: Path = typer.Option(Path("evals/tasks"), "--tasks-dir", help="Directory of task files."),
+    canonical: Path = typer.Option(Path("canonical"), "--canonical", help="Directory holding the canonical files."),
+    registry: Path | None = typer.Option(
+        None, "--registry", help="Model registry; defaults to routing/registry.yaml next to --canonical."
+    ),
+    repo: Path = typer.Option(Path("."), "--repo", "-C", help="Repository whose .agent-team/eval/ holds the results."),
+) -> None:
+    """Plan the tasks x arms x runs matrix and print its cost; with --execute (after a dry run), run it under the caps."""
+    if dry_run and execute:
+        typer.echo("error: give --dry-run or --execute, not both", err=True)
+        raise typer.Exit(code=2)
+    selected = _csv(arms) or list(ARMS)
+    unknown = [a for a in selected if a not in ARMS]
+    if unknown:
+        typer.echo(f"error: unknown arm(s) {', '.join(unknown)}; known: {', '.join(ARMS)}", err=True)
+        raise typer.Exit(code=2)
+    if per_task > total:
+        typer.echo("error: --max-budget-usd-per-task is above --max-total-usd; no cell could start", err=True)
+        raise typer.Exit(code=2)
+    registry_path = registry or default_registry_path(canonical)
+    try:
+        store = EvalStore.open(repo)
+        loaded = load_tasks(tasks_dir, _csv(tasks) or None)
+        model = baseline_model(registry_path, baseline)
+        team = treatment_models(registry_path)
+        probe_model = resolve_model(load_registry(registry_path), "cheap", runtime="claude").model
+        tree = load_canonical(canonical)
+        policy = tree.one("policy", "default").spec
+        default_env = tree.one("environment", "default").spec
+    except (TaskError, RegistryError, RunAgentError, RunStoreError, EvalStoreError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    claude, mini = _which("claude"), shutil.which("mini")
+    ordered = [a for a in ARMS if a in selected]
+    arm_plans = [
+        ArmPlan(arm=a, description=ARM_DESCRIPTIONS[a], model=team if a == "treatment" else model,
+                refusal=refusal(a, claude=claude, mini=mini, environ=dict(os.environ)))  # fmt: skip
+        for a in ordered
+    ]
+    probe_on = not skip_probe and any(a != "baseline-a" for a in ordered)
+    plan = build_plan(loaded, arm_plans, runs=runs, caps=Caps(per_task_usd=per_task, total_usd=total),
+                      timeout_s=timeout, probe_on=probe_on)  # fmt: skip
+    typer.echo(render_plan(plan, estimate(plan, store.cells()), probe_model=probe_model))
+    seen = plan.plan_hash in store.dry_run_hashes()
+    if not execute or not seen:
+        store.append(DryRunRecord(at=datetime.now(UTC), plan=plan))
+        if execute:
+            typer.echo("this plan has not been dry-run before, so this was its dry run: no model was called. "
+                       "Review it, then run the same command with --execute again.")  # fmt: skip
+            raise typer.Exit(code=1)
+        typer.echo(f"dry run: no model was called. Run the same command with --execute to spend up to ${total:.2f}.")
+        return
+    refused = [f"{a.arm}: {a.refusal}" for a in arm_plans if a.refusal]
+    if refused:
+        typer.echo("error: cannot run: " + "; ".join(refused), err=True)
+        raise typer.Exit(code=2)
+    eval_id = new_eval_id(datetime.now(UTC))
+    try:
+        canonical_copy = prepare_canonical(canonical, registry_path, store.work_dir / eval_id,
+                                           hidden_paths(loaded, store))  # fmt: skip
+        srt = srt_path()
+        assert srt is not None  # refusal() checked it for every arm
+        ctx = ArmContext(
+            canonical_dir=canonical_copy,
+            registry_path=canonical_copy.parent / REGISTRY_PATH,
+            srt=srt,
+            baseline_model=model,
+            deny_read=hidden_paths(loaded, store),
+            allowed_domains=list(default_env.network.allowed_domains),
+            timeout_s=timeout,
+            claude=claude,
+            mini=mini,
+            redaction=tuple(r.pattern for r in policy.redaction),
+            echo=typer.echo,
+        )
+        run_eval(store, plan, loaded, ctx, eval_id=eval_id, echo=typer.echo)
+    except EvalError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    except KeyboardInterrupt as exc:
+        typer.echo(f"interrupted: eval {eval_id} keeps the cells it recorded; the rest did not run", err=True)
+        raise typer.Exit(code=130) from exc
+    typer.echo("")
+    _print_report(store, eval_id)
+
+
+def _print_report(store: EvalStore, eval_id: str | None) -> None:
+    evals = store.evals()
+    if not evals:
+        typer.echo("no eval recorded yet; run 'agent-team eval run'")
+        return
+    record = next((e for e in evals if e.eval_id == eval_id), None) if eval_id else evals[-1]
+    if record is None:
+        typer.echo(f"error: no eval {eval_id!r}; known: {', '.join(e.eval_id for e in evals)}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(render_report(record, store.cells(record.eval_id), store.probes(record.eval_id)))
+
+
+@eval_app.command("report")
+def eval_report(
+    eval_id: str | None = typer.Option(None, "--eval", help="The eval to report; default the latest."),
+    repo: Path = typer.Option(Path("."), "--repo", "-C", help="Repository whose .agent-team/eval/ holds the results."),
+) -> None:
+    """Print the section 13 metrics per arm and the decision rule's verdict, from the recorded cells only."""
+    try:
+        store = EvalStore.open(repo)
+        _print_report(store, eval_id)
+    except (RunStoreError, EvalStoreError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
 
 
 env_app = typer.Typer(help="Manage the per-run worktree environments under .agent-team/.", no_args_is_help=True)
