@@ -554,3 +554,27 @@ def test_orchestrator_commands_keep_tool_caches_inside_the_sandbox(tmp_path: Pat
                          base_env={"PATH": os.environ["PATH"], "HOME": str(tmp_path), "UV_CACHE_DIR": "/elsewhere"})  # fmt: skip
     assert result.passed, result.output
     assert f"uv={sandbox_tmp / 'cache' / 'uv'} xdg={sandbox_tmp / 'cache'} ci=1" in result.output
+
+
+@pytest.mark.parametrize(
+    ("command", "exit_code", "errored"),
+    [
+        ("uv run pytest -q tests/test_x.py -k gone", 5, "no tests collected"),
+        ("uv run pytest -q", 2, "interrupted or usage error"),
+        ("pytest tests/test_x.py", 4, "usage error"),
+        ("sh check.sh", 127, "not found"),
+        ("./check", 126, "not executable"),
+        ("sh check.sh", None, "timed out"),
+        ("uv run pytest -q tests/test_x.py", 1, None),
+        ("sh check.sh", 1, None),
+        ("sh check.sh", 2, None),  # only pytest's 2 is a usage error; a shell check may exit 2 on failure
+    ],
+)
+def test_reproduction_gate_tells_an_errored_command_from_a_failing_check(command: str, exit_code: int | None, errored: str | None) -> None:
+    from agent_team.orchestrator.workspace import CommandResult, reproduction_error
+
+    reason = reproduction_error(command, CommandResult("reproduction", command, exit_code, 1, ""))
+    if errored is None:
+        assert reason is None
+    else:
+        assert reason is not None and errored in reason
