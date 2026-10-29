@@ -187,6 +187,28 @@ One run per repository: `.agent-team/lock` holds the live run's PID, and a lock 
 agent-team env sweep   # dispose worktrees of ended or unrecorded runs; in-progress runs keep theirs
 ```
 
+## Focus and lessons
+
+Two ideas taken from OpenRig and rebuilt to fit this design (see [docs/OPENRIG_COMPARISON.md](docs/OPENRIG_COMPARISON.md)).
+
+**Focus.** Every Claude Code worker gets a second hook, `PostToolUse`, beside the policy hook. It counts tool calls and adds context to the session when the worker drifts: every 25 calls it repeats the task; after 15 calls in a row with no file change and no test run it says so; the same shell command 3 times in a row is called a loop; a write to a file the plan does not name is flagged. It never blocks, and any error in it lets the run go on. What it said is in `.agent-team/compiled/<run-id>/focus.log.jsonl`. The same signals are computed after the fact, for any runtime, from the run record:
+
+```bash
+agent-team trace <run-id> --focus
+# focus: 6/41 calls made progress (15%); longest stall 22 calls (over the 15-call threshold); loops: 'git status' x3+
+```
+
+**Lessons.** Blocker and major reviewer findings can become rules the implementer's later prompts carry. Nothing reaches a prompt until a person approves it, every lesson names the run it came from, and a wrong one can be pulled out everywhere at once:
+
+```bash
+agent-team lessons propose <run-id>          # findings -> proposed lessons
+agent-team lessons approve L-1a2b3c4d --text "Empty inputs need their own branch and test."
+agent-team lessons list
+agent-team lessons quarantine "triple-signed"  # removes every match, logs its source run
+```
+
+Lessons live in `.agent-team/memory/lessons/<agent>.yaml`, gitignored with the rest of `.agent-team/`, so they stay in the repository they were learned in.
+
 ## Canonical files
 
 `canonical/` holds the agents, skills, workflows, tools and policies that every runtime adapter compiles from (see section 6 of the architecture doc). Validate the tree and export the schemas with:

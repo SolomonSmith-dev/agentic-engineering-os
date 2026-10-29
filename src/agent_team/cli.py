@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Literal
 
 import typer
+import yaml
 
 from agent_team import __version__
 from agent_team.adapters.claude.invoke import ClaudeVersionError
@@ -14,11 +15,16 @@ from agent_team.bootstrap import BootstrapError, apply_plan, plan_configure, ren
 from agent_team.canonical import validate_tree
 from agent_team.doctor import _which, build_report, render_table
 from agent_team.environments import AllocatorError, LockHeldError, sweep
+from agent_team.focus import analyze as analyze_focus
 from agent_team.memory import DEFAULT_COMMAND_TIMEOUT_S, MEMORY_DIR, InspectError, inspect_repo, render_memory_summary
+from agent_team import lessons as lessons_mod
 from agent_team.orchestrator import OrchestratorError, default_executor_factory, resume_workflow, run_workflow
 from agent_team.run_agent import RunAgentError, run_agent
 from agent_team.runs import RunStore, RunStoreError, UnknownRunError, render_run_list, render_trace
+from agent_team.runs.store import STATE_DIR, repo_root
 from agent_team.schemas import SCHEMAS, RunRecord, json_schema
+from agent_team.bootstrap.configure import CONFIG_NAME
+from agent_team.schemas.bootstrap import RepoConfig
 
 # Runtimes `agent-team run --runtime` accepts; codex runs the independent reviewer only (step 12).
 RUNTIMES: tuple[Literal["claude", "codex"], ...] = ("claude", "codex")
@@ -146,6 +152,7 @@ def trace(
     repo: Path = typer.Option(Path("."), "--repo", "-C", help="Target repository; defaults to the current directory."),
     limit: int = typer.Option(20, "--limit", "-n", min=1, help="How many recent runs to list."),
     calls: bool = typer.Option(False, "--calls", help="Also list every tool call (arguments are stored redacted)."),
+    focus: bool = typer.Option(False, "--focus", help="Also print progress, the longest stall and command loops."),
 ) -> None:
     """Print a run's state transitions with elapsed time and cost, or list recent runs."""
     try:
@@ -168,7 +175,20 @@ def trace(
         except UnknownRunError as exc:
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(code=1) from exc
-        typer.echo(render_trace(run, store.transitions(run_id), store.tool_calls(run_id), show_calls=calls))
+        tool_calls = store.tool_calls(run_id)
+        typer.echo(render_trace(run, store.transitions(run_id), tool_calls, show_calls=calls))
+        if focus:
+            typer.echo(analyze_focus(tool_calls, _test_commands(repo)).render())
+
+
+def _test_commands(repo: Path) -> list[str]:
+    """The test commands configure verified, so a test run counts as progress; none when unconfigured."""
+    path = repo_root(repo) / STATE_DIR / CONFIG_NAME
+    try:
+        config = RepoConfig.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
+    except Exception:  # noqa: BLE001 - --focus still reports without test commands
+        return []
+    return list(config.commands.get("test", []))
 
 
 # Errors that refuse a run with exit 2: something to fix before anything useful ran.
@@ -434,6 +454,82 @@ def env_sweep(
         if result.archive:
             line += f"; work saved to {result.archive}"
         typer.echo(line)
+
+
+lessons_app = typer.Typer(
+    help="Lessons reviewer findings taught an agent: propose from a run, approve, list, quarantine.", no_args_is_help=True
+)
+app.add_typer(lessons_app, name="lessons")
+
+REPO_OPTION = typer.Option(Path("."), "--repo", "-C", help="Target repository; defaults to the current directory.")
+
+
+def _lessons_root(repo: Path) -> Path:
+    try:
+        return repo_root(repo)
+    except RunStoreError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+
+@lessons_app.command("list")
+def lessons_list(repo: Path = REPO_OPTION) -> None:
+    """Every lesson, proposed and approved, with the run it came from."""
+    try:
+        typer.echo(lessons_mod.render_list(_lessons_root(repo)))
+    except lessons_mod.LessonError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+
+@lessons_app.command("propose")
+def lessons_propose(run_id: str = typer.Argument(..., help="A workflow run whose reviewer findings to learn from."), repo: Path = REPO_OPTION) -> None:
+    """Turn a run's blocker and major reviewer findings into proposed implementer lessons."""
+    try:
+        added = lessons_mod.propose_from_run(_lessons_root(repo), run_id)
+    except (lessons_mod.LessonError, RunStoreError, UnknownRunError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    if not added:
+        typer.echo(f"no new lessons: run {run_id} has no blocker or major findings that are not already proposed")
+        return
+    for lesson in added:
+        typer.echo(f"proposed {lesson.id}  {lesson.agent}  {lesson.text}")
+    typer.echo("approve with: agent-team lessons approve <id> [--text 'the general rule']")
+
+
+@lessons_app.command("approve")
+def lessons_approve(
+    lesson_id: str = typer.Argument(..., help="The lesson id from 'lessons list'."),
+    text: str | None = typer.Option(None, "--text", help="Reword the lesson as a general rule before approving."),
+    repo: Path = REPO_OPTION,
+) -> None:
+    """Approve a lesson so the agent's future prompts carry it."""
+    try:
+        lesson = lessons_mod.approve(_lessons_root(repo), lesson_id, text)
+    except lessons_mod.LessonError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"approved {lesson.id}  {lesson.agent}  {lesson.text}")
+
+
+@lessons_app.command("quarantine")
+def lessons_quarantine(
+    text: str = typer.Argument(..., help="Text the bad lesson contains (case-insensitive, at least 4 characters)."),
+    repo: Path = REPO_OPTION,
+) -> None:
+    """Remove every lesson containing TEXT from every agent and log where each came from."""
+    try:
+        removed = lessons_mod.quarantine(_lessons_root(repo), text)
+    except lessons_mod.LessonError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    if not removed:
+        typer.echo(f"no lesson contains {text!r}")
+        return
+    for lesson in removed:
+        typer.echo(f"removed {lesson.id}  {lesson.agent}  from run {lesson.source_run}  {lesson.text}")
+    typer.echo(f"logged in {lessons_mod.LESSONS_DIR / lessons_mod.QUARANTINE_LOG}")
 
 
 schema_app = typer.Typer(help="Inspect and export the canonical JSON Schemas.", no_args_is_help=True)

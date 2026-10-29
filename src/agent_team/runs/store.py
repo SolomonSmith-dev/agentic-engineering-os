@@ -455,6 +455,15 @@ class RunStore:
             return None
         return Checkpoint(run_id=run_id, seq=row["seq"], state=row["to_state"], data=json.loads(row["checkpoint"]))
 
+    def checkpoints(self, run_id: str) -> list[Checkpoint]:
+        """Every checkpoint for a run, oldest first: a retried state leaves one per attempt."""
+        self._run_row(run_id)
+        rows = self._conn.execute(
+            "SELECT seq, to_state, checkpoint FROM transitions WHERE run_id = ? AND checkpoint IS NOT NULL ORDER BY seq",
+            (run_id,),
+        ).fetchall()
+        return [Checkpoint(run_id=run_id, seq=r["seq"], state=r["to_state"], data=json.loads(r["checkpoint"])) for r in rows]
+
     def tool_calls(self, run_id: str) -> list[ToolCallRecord]:
         self._run_row(run_id)
         rows = self._conn.execute("SELECT * FROM tool_calls WHERE run_id = ? ORDER BY seq", (run_id,)).fetchall()

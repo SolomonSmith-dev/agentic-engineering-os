@@ -573,3 +573,24 @@ def test_run_needs_exactly_one_prompt_source(repo: Path, fake_path) -> None:
     fake_path()
     result = runner.invoke(app, ["run", "--agent", "independent-reviewer", "--model", MODEL, "--repo", str(repo)])
     assert result.exit_code == 2 and "--prompt-file" in result.output
+
+
+def test_focus_hook_and_lessons_are_compiled_only_when_given(tmp_path: Path) -> None:
+    agent, body = reviewer()
+    plain = compile_agent(agent, body, skills(agent), policy(), ceiling="A2", model=MODEL,
+                          out_dir=tmp_path / "plain", roots=[tmp_path], home=tmp_path)  # fmt: skip
+    assert "PostToolUse" not in json.loads(plain.settings_json.read_text())["hooks"]
+    assert not (tmp_path / "plain" / "focus.json").exists()
+
+    compiled = compile_agent(
+        agent, body, skills(agent), policy(), ceiling="A2", model=MODEL,
+        out_dir=tmp_path / "c", roots=[tmp_path], home=tmp_path, test_commands=("uv run pytest",),
+        focus_brief="Fix the bug.", lessons_section="## Lessons from past runs\n\n- Test empty input.",
+    )  # fmt: skip
+    hooks = json.loads(compiled.settings_json.read_text())["hooks"]
+    assert "agent_team.adapters.claude.focus_hook" in hooks["PostToolUse"][0]["hooks"][0]["command"]
+    assert "agent_team.adapters.claude.hook" in hooks["PreToolUse"][0]["hooks"][0]["command"]
+    focus = json.loads((tmp_path / "c" / "focus.json").read_text())
+    assert focus["brief"] == "Fix the bug." and focus["test_commands"] == ["uv run pytest"]
+    prompt = json.loads(compiled.agents_json.read_text())["independent-reviewer"]["prompt"]
+    assert prompt.index("## Definition of done") < prompt.index("## Lessons from past runs") < prompt.index("## Skill:")
