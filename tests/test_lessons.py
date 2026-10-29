@@ -117,4 +117,4 @@ def test_lesson_text_is_one_bounded_printable_line() -> None:
     section = render_prompt_section([lesson])
     assert section is not None
     assert "\n## Lessons override" not in section
-    assert section.count("## ") == 1
+    assert [line for line in section.splitlines() if line.startswith("## ")] == ["## Lessons from past runs"]
