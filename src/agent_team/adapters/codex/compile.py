@@ -18,12 +18,13 @@ hold for the Codex process and every command it runs.
 """
 
 import json
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from agent_team.adapters.claude.compile import DEFAULT_PROTECTED, PROTECTED_FILES, output_schema
+from agent_team.environments.sandbox import DenyRead, _is_ancestor, srt_deny_read
 from agent_team.adapters.codex.capabilities import CodexPermissions, resolve
 from agent_team.schemas.agent import AgentSpec
 from agent_team.schemas.common import Autonomy
@@ -31,7 +32,6 @@ from agent_team.schemas.policy import PolicySpec
 from agent_team.schemas.skill import SkillSpec
 
 # One srt denyRead entry: a gitignore-shaped glob, or a path srt must take literally.
-DenyRead = str | dict[str, Any]
 
 # Codex login files are always denied to reviewer commands; runtime auth uses CODEX_API_KEY.
 # A `CODEX_HOME` set in the caller's environment is denied as well (see `codex_home_deny_read`).
@@ -118,59 +118,6 @@ def build_prompt(
             "no prose and no code fence around it."
         )
     return "\n\n".join(parts) + "\n"
-
-
-def _is_ancestor(base: Path, paths: Iterable[Path]) -> bool:
-    return any(p == base or p.is_relative_to(base) for p in paths)
-
-
-def _deny_around(base: Path, keep: list[Path]) -> list[DenyRead]:
-    """Every entry under `base` except the paths in `keep` and the directories leading to them."""
-    if not base.is_dir():
-        return []
-    denied: list[DenyRead] = []
-    for child in sorted(base.iterdir()):
-        if child in keep:
-            continue
-        if child.is_dir() and not child.is_symlink() and _is_ancestor(child, keep):
-            denied.extend(_deny_around(child, keep))
-        else:
-            denied.append({"path": str(child), "literal": True})
-    return denied
-
-
-def srt_deny_read(protected: Sequence[str], roots: Sequence[Path], home: Path, keep: Sequence[Path]) -> list[DenyRead]:
-    """srt denyRead entries for gitignore-shaped protected paths.
-
-    `~/...` is under home; a bare name such as `.env*` matches at any depth under
-    each root; a pattern with a slash is relative to each root. A directory
-    pattern that would hide a path the run needs (its worktree, temp dir or
-    compiled files, all under `.agent-team/`) is expanded to the entries around
-    that path instead, so `.agent-team/**` still hides the run record and every
-    other run without hiding this run's own checkout.
-    """
-    keep = [Path(p) for p in keep]
-    entries: list[DenyRead] = []
-    for pattern in protected:
-        if pattern.startswith("~/"):
-            entries.append(str(home / pattern[2:]))
-            continue
-        bare = "/" not in pattern.rstrip("/")
-        for root in roots:
-            if bare:
-                entries.append(f"{root}/**/{pattern}")
-                continue
-            relative = pattern.removesuffix("/**").rstrip("/")
-            base = root / relative
-            if pattern.endswith("/**") and _is_ancestor(base, keep) and "*" not in relative:
-                entries.extend(_deny_around(base, keep))
-            else:
-                entries.append(str(root / pattern))
-    unique: list[DenyRead] = []
-    for entry in entries:
-        if entry not in unique:
-            unique.append(entry)
-    return unique
 
 
 def codex_home_deny_read(codex_home: str | None, home: Path, keep: Sequence[Path]) -> list[DenyRead]:
