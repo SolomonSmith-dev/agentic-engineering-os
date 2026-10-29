@@ -56,6 +56,7 @@ from agent_team.orchestrator.workspace import (
     short,
     workflow_environment,
     write_artifact,
+    reproduction_error,
 )
 from agent_team.run_agent import Canonical, RunAgentError, requested_autonomy, run_agent
 from agent_team.runs.store import STATE_DIR, RunStore, repo_root
@@ -320,6 +321,10 @@ class DefaultExecutor:
             ran = run_command(env, "reproduction", command, timeout_s=self.timeout_s, base_env=os.environ)
             text = render_results([ran], f"reproduction before the fix, at {settled.head}, in srt")
             ref = write_artifact(self.root, given.run_id, "reproduction.log", redact_lines(text, self.redaction))
+            errored = reproduction_error(command, ran)
+            if errored:
+                return NodeResult(blocked=f"the reproduction command errored rather than failed ({errored}); "
+                                  f"it must exit 1 from a failing check: {command}", note=_join(*notes))  # fmt: skip
             fails = not ran.passed
             check: dict[str, Any] = {**ref, "verified": True, "head": settled.head, "exit_code": ran.exit_code}
             notes.append(f"reproduction {'fails' if fails else 'passes'} at {short(settled.head)} (exit {ran.exit_code})")
