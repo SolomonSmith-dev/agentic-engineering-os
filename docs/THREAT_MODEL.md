@@ -76,6 +76,7 @@ Mitigations:
 - **The worker's environment is built from an allowlist,** not inherited, so `GH_TOKEN`, `GITHUB_TOKEN` and cloud credentials never reach it (`ENV_ALLOWLIST` and `build_invocation` in `src/agent_team/adapters/claude/invoke.py` and `src/agent_team/adapters/codex/invoke.py`).
 - **srt denies reads of `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.git-credentials`, `~/.netrc` and the home registry, cluster and cloud logins (`HOME_LOGIN_DIRS` minus `~/.gnupg`, `HOME_LOGIN_FILES`) for every sandboxed process** (`DENY_READ_HOME` in `sandbox.py`).
 - **The same paths, plus `~/.config/gcloud`, `~/.gnupg` and `~/.claude`, are compiled into deny rules and the PreToolUse hook; key files by name (`KEY_FILES`) into deny rules only** (`DEFAULT_PROTECTED`, `PROTECTED_FILES` in `compile.py`, `src/agent_team/adapters/claude/hook.py`).
+- **Sandboxed Claude runs also srt-deny every protected path except `~/.claude`,** including `~/.config/gcloud`, `~/.gnupg` and key files by name (T3).
 - **Codex runs on `CODEX_API_KEY` only, with an empty `CODEX_HOME` of its own; `~/.codex/**` and a caller's `CODEX_HOME` are srt read-denied** (`auth_mode`, `build_invocation` in `src/agent_team/adapters/codex/invoke.py`; `CODEX_PROTECTED`, `codex_home_deny_read` in `compile.py`).
 - **`gh` is denied in every session,** and the orchestrator alone holds the GitHub credential (`pr.py`).
 
@@ -83,7 +84,6 @@ Residual:
 
 - **API keys reach the worker process.** In Claude's API-key mode `ANTHROPIC_API_KEY` is in the worker's environment, readable by any command it runs. Codex always runs on `CODEX_API_KEY`; Codex is meant to strip it from shell commands (below).
 - **Claude's own login stays readable.** `~/.claude` is not srt read-denied, because Claude Code reads its login there. Only the hook stands between a Bash command and `~/.claude`, and the hook is a tripwire (T3).
-- **On the Claude path, `~/.config/gcloud`, `~/.gnupg` and key files by name (`KEY_FILES`) are hook or permission rules only,** not srt read denies.
 - **For Codex, the key is withheld from shell commands only by Codex's own shell-environment excludes,** which the code marks unverified against a real Codex.
 
 ### T3. Secret read through an obfuscated shell command
@@ -94,16 +94,16 @@ The hook reads Bash commands the way the shell would and blocks any word that na
 
 Mitigations:
 
-- **The Codex runtime compiles protected paths into srt `denyRead` rules,** keeping only the run's checkout readable under `.agent-team/` (`srt_deny_read` in `src/agent_team/adapters/codex/compile.py`, applied in `_run_codex` in `run_agent.py`).
-- **`inspect`'s command verification does the same before the first repository command runs** (`protect` in `src/agent_team/memory/verify.py`).
+- **Every sandboxed run compiles the protected paths into srt `denyRead` rules,** keeping only the run's own worktree, temp directory and compiled files readable under `.agent-team/` (`srt_deny_read` in `src/agent_team/environments/sandbox.py`). Claude runs get them since #33, minus `~/.claude` (`deny_read` in `compile_agent`, `extend_settings` in `run_agent`); Codex runs in `_run_codex`; `inspect`'s verification in `protect` (`src/agent_team/memory/verify.py`). A workflow's DISCOVERY and TEST commands share the implementer's sandbox, so they inherit its denies.
+- **Verified on this branch after #33.** Inside a run's sandbox with the implementer compiled, `f=.e; cat ../../../${f}nv` and a read of `.agent-team/runs.db` both fail with `Permission denied`, while the worktree stays readable. Before #33 the same `.env` read succeeded.
 
-Residual, verified on this branch:
+Residual:
 
-- **On the Claude path, srt does not read-deny the policy's protected paths inside the target repository.** This covers a single `run --agent` and the bug-fix workflow: the implementer's Bash, and the DISCOVERY and TEST commands the orchestrator runs. Only `DENY_READ_HOME` is applied, which since #32 covers home logins (T2) but nothing inside the repository: not `.env*`, not key files, not `.agent-team/`.
-- **Demonstration.** A process inside the run's sandbox, started from the worktree, read the target repository's `.env` with `f=.e; cat ../../../${f}nv`.
-- **What else is exposed.** The same holds for `.agent-team/runs.db` and other runs' artifacts. Because TEST runs code the implementer wrote, a test can read them, and the hook never sees it.
-- **What partly limits it.** Redaction catches only known token shapes in what is stored (T4). The network allowlist limits where the data can go (T5).
-- **The fix.** Apply the same `srt_deny_read` extension the Codex path and `inspect` use, minus `~/.claude` for the Claude worker, to every Claude run and workflow environment.
+- **Without srt there are no read denies at all.** The A2 cap removes bare Bash, but a test command an A2 agent runs through `test.run` can read anything you can.
+- **`~/.claude` stays readable to a Claude run's commands** (T2).
+- **Redaction and the network allowlist only limit what leaks** from whatever is readable (T4, T5).
+
+History: until #33, Claude runs got only `DENY_READ_HOME`, and a sandboxed process read the target's `.env` with the command above. #33 applied the fix this document proposed.
 
 ### T4. A secret leaks into the run record, an artifact or the PR
 

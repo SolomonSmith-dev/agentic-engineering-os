@@ -86,7 +86,7 @@ They are enforced twice:
    - It blocks a file write that resolves outside the run's worktree, symlinks followed, or into git's metadata.
    - **It fails closed**: any error evaluating a call blocks it.
 
-The hook is a tripwire, not a boundary. A process that builds a path at run time (`f=.e; cat ${f}nv`) gets past it. Only srt's `denyRead` rules hold against that, and the Claude path does not compile protected paths into them yet; see [THREAT_MODEL.md](THREAT_MODEL.md#t3-secret-read-through-an-obfuscated-shell-command).
+The hook is a tripwire, not a boundary. A process that builds a path at run time (`f=.e; cat ${f}nv`) gets past it. Only srt's `denyRead` rules hold against that. Inside srt they do: every run compiles the protected paths into srt read denies (next section). Outside srt nothing does; see [THREAT_MODEL.md](THREAT_MODEL.md#t3-secret-read-through-an-obfuscated-shell-command).
 
 ## The srt sandbox
 
@@ -94,8 +94,8 @@ When `srt` is installed and the environment's tier is `srt` (`canonical/environm
 
 - **Network**: denied except the environment's `allowed_domains`: `api.anthropic.com`, `github.com`, `*.github.com`, `*.githubusercontent.com`, `pypi.org`, `files.pythonhosted.org`, `registry.npmjs.org` by default. A Codex run adds only `api.openai.com`.
 - **Writes**: only the worktree, the run's temp directory, and the corners of `.git` a commit on the run's branch needs: the object store, the worktree's admin directory, and `refs/heads/agent-team/` with its reflog under `logs/`. `main` and every other ref, `.git/hooks` and `.git/config` stay read-only, so a sandboxed commit cannot plant a hook or config that later runs outside the sandbox. The worktree's `.git` file and its admin directory's `commondir`, `gitdir` and `config.worktree` are write-denied, because they name the repository git opens (`git_pointer_files`).
-- **Reads denied for every run** (`DENY_READ_HOME`): `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.git-credentials`, `~/.netrc`, and the home logins above except `~/.gnupg`, which stays readable so a worker's own commit works under a global `commit.gpgsign` (the hook still protects it).
-- **Reads denied for `inspect`'s command verification and Codex runs only**: the policy's protected paths, `DEFAULT_PROTECTED`, the key files and `~/.codex/**` (`srt_deny_read` in `src/agent_team/adapters/codex/compile.py`; `protect` in `src/agent_team/memory/verify.py`). A Codex run also denies a `CODEX_HOME` you set (`codex_home_deny_read`). Claude runs do not get this list; see [THREAT_MODEL.md](THREAT_MODEL.md#t3-secret-read-through-an-obfuscated-shell-command).
+- **Reads denied in the base settings** (`DENY_READ_HOME`): `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.git-credentials`, `~/.netrc`, and the home logins above except `~/.gnupg`.
+- **Reads denied once an agent is compiled for the run**: the policy's protected paths, `DEFAULT_PROTECTED` and the key files, matched in the worktree and in the target repository, with `.agent-team/` denied around the run's own worktree, temp directory and compiled files (`srt_deny_read` in `src/agent_team/environments/sandbox.py`). A Claude run gets this list minus `~/.claude/**`, which the worker needs for its own login (`deny_read` in `compile_agent`, applied by `extend_settings` in `run_agent`); that list includes `~/.gnupg`. `inspect`'s command verification and Codex runs also deny `~/.codex/**`, and a Codex run denies a `CODEX_HOME` you set (`protect` in `src/agent_team/memory/verify.py`; `codex_home_deny_read`). In a workflow, DISCOVERY and TEST commands run in the same sandbox after the implementer's compile has added these denies.
 - **Its own rules are out of reach**: the settings file lives in `.agent-team/sandbox/`, outside the worktree.
 
 Without srt, a run falls back to the worktree alone and its ceiling is capped at A2. That means:
@@ -158,7 +158,7 @@ The store refuses to open unless git ignores `.agent-team/`, so none of it is co
 
 Read [THREAT_MODEL.md](THREAT_MODEL.md) before trusting a run with anything valuable. In short:
 
-- Protected paths inside the repository are only a tripwire on the Claude path.
+- Without srt, protected paths are only permission rules and a tripwire hook, and test commands an A2 agent runs are not confined.
 - An API key in API-key mode is in the worker's environment.
 - `~/.claude` stays readable inside the sandbox, because Claude Code reads its own login there.
 - The reviewer and the implementer currently share a vendor.
