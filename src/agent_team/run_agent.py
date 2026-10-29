@@ -37,6 +37,8 @@ from agent_team.canonical import Document, validate_tree
 from agent_team.environments import acquire, create, effective_ceiling, release, srt_path
 from agent_team.environments.sandbox import extend_settings
 from agent_team.environments.worktree import Environment
+from agent_team.focus import brief
+from agent_team.lessons import for_prompt, render_prompt_section
 from agent_team.routing import RegistryError, default_registry_path, load_registry, resolve_model
 from agent_team.runs.render import status_line
 from agent_team.runs.store import STATE_DIR, RunStore, repo_root
@@ -123,6 +125,7 @@ def run_agent(
     base_commit: str | None = None,
     state: RunState | None = None,
     after: AfterAgent | None = None,
+    focus: bool = True,
     echo: Callable[[str], None] = print,
 ) -> tuple[RunRecord, AdapterResult]:
     """Run one agent against `repo` and return its run record and normalized result.
@@ -218,6 +221,8 @@ def run_agent(
                 home=Path.home(),
                 test_commands=test_commands,
                 sandboxed=environment.sandbox.sandboxed,
+                focus_brief=brief(prompt) if focus else None,
+                lessons_section=render_prompt_section(for_prompt(root, agent.name)),
                 keep=(environment.path, environment.sandbox.tmp_dir),
             )
             if environment.sandbox.sandboxed:

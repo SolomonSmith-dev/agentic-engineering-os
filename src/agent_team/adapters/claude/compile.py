@@ -7,6 +7,7 @@ through flags, so nothing is written into the target repository's `.claude/`
     agents.json       --agents: the agent, its tools and its prompt
     settings.json     --settings: permission allow/deny rules, dontAsk, PreToolUse hook, fallbackModel
     policy.json       read by the hook: protected paths, the roots they resolve against, the write root
+    focus.json        read by the PostToolUse focus hook: the task brief, test commands, thresholds
     agents/<name>.md  the same agent as a native subagent file, for inspection and step 8
     schema.json       --json-schema, when the agent's output has a registered schema
 
@@ -87,9 +88,16 @@ def path_rule(tool: str, pattern: str) -> str:
 
 
 def build_prompt(
-    body: str, agent: AgentSpec, skills: list[tuple[SkillSpec, str]], permissions: Permissions, has_schema: bool
+    body: str,
+    agent: AgentSpec,
+    skills: list[tuple[SkillSpec, str]],
+    permissions: Permissions,
+    has_schema: bool,
+    lessons_section: str | None = None,
 ) -> str:
     parts = [body.strip(), "## Definition of done", *(f"- {item}" for item in agent.definition_of_done)]
+    if lessons_section:
+        parts.append(lessons_section.strip())
     for spec, skill_body in skills:
         parts.append(f"## Skill: {spec.name}\n\n{spec.description}\n\n{skill_body.strip()}")
     allowed = "\n".join(f"- `{rule}`" for rule in permissions.allow) or "- none"
@@ -124,11 +132,16 @@ def compile_agent(
     sandboxed: bool = False,
     keep: tuple[Path, ...] = (),
     python: str = sys.executable,
+    focus_brief: str | None = None,
+    planned_files: tuple[str, ...] = (),
+    lessons_section: str | None = None,
 ) -> CompiledAgent:
     """Write the compiled files for one agent under `out_dir` and describe them.
 
-    `roots[0]` is the session's working directory, the only place file tools may write. `keep`
-    names paths the run needs that a protected pattern would hide (its worktree and temp dir).
+    `roots[0]` is the session's working directory, the only place file tools may write.
+    `focus_brief` turns on the PostToolUse focus hook (see `focus_hook`); `lessons_section`
+    is appended to the prompt after the definition of done. `keep` names paths the run needs
+    that a protected pattern would hide (its worktree and temp dir).
     """
     deny = [*agent.capabilities.deny, *policy.denied_capabilities]
     permissions = resolve(agent.capabilities.allow, deny, ceiling, test_commands=test_commands, sandboxed=sandboxed)
@@ -171,6 +184,32 @@ def compile_agent(
         },
         "attribution": {"commit": "", "pr": ""},
     }
+    if focus_brief:
+        focus_json = out_dir / "focus.json"
+        focus_json.write_text(
+            json.dumps(
+                {
+                    "brief": focus_brief,
+                    "test_commands": list(test_commands),
+                    "planned_files": list(planned_files),
+                    "write_root": str(roots[0]),
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        settings["hooks"]["PostToolUse"] = [
+            {
+                "matcher": "*",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": shlex.join([python, "-m", "agent_team.adapters.claude.focus_hook", str(focus_json)]),
+                    }
+                ],
+            }
+        ]
     if fallback_models:
         # Tried in order when the model is overloaded or unavailable; Claude Code reads a list here.
         settings["fallbackModel"] = list(fallback_models)
@@ -181,7 +220,7 @@ def compile_agent(
     disallowed = [r for r in permissions.deny if "(" not in r]
     definition: dict[str, Any] = {
         "description": agent.purpose,
-        "prompt": build_prompt(body, agent, skills, permissions, schema is not None),
+        "prompt": build_prompt(body, agent, skills, permissions, schema is not None, lessons_section),
         "tools": [*permissions.tools, STRUCTURED_OUTPUT_TOOL] if schema is not None else permissions.tools,
         "disallowedTools": disallowed,
         "model": model,
