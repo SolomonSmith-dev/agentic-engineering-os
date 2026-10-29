@@ -18,7 +18,7 @@ but are not canonical kinds: they live in `evals/` and `.agent-team/`, not `cano
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 from agent_team.schemas.common import CanonicalModel, KebabName
 
@@ -50,6 +50,14 @@ class EvalTask(CanonicalModel):
     kind: TaskKind
     repo: str = Field(min_length=1, description="fixture:<name>, or a git URL or path to clone.")
     ref: str = Field(min_length=1, description="The commit every arm starts from; for a fixture, the commit it materializes to.")
+
+    @field_validator("ref", mode="before")
+    @classmethod
+    def _ref_is_a_string(cls, value: object) -> object:
+        # An unquoted hex ref like 1234e5678901 or 123456789012 parses from YAML as a number.
+        if isinstance(value, (int, float)):
+            raise ValueError("parsed as a number; quote the ref in the task file")
+        return value
     instruction: str = Field(min_length=1, description="What every arm is told, verbatim.")
     test_command: Command | None = Field(
         default=None, description="The repository's own test command: agents may run it, the treatment's TEST step does."

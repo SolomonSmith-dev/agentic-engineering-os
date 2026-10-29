@@ -224,6 +224,10 @@ def run_command(env: Environment, kind: str, command: str, *, timeout_s: float, 
     if not env.sandbox.sandboxed:
         raise WorkspaceError("srt is absent; the orchestrator runs no command outside the sandbox")
     child_env = env.sandbox.env({k: base_env[k] for k in ENV_ALLOWLIST if k in base_env})
+    # Evidence runs never leave bytecode behind: Python validates a .pyc by mtime (whole seconds)
+    # and size, so a fix written in the same second as a check that compiled the old file, at the
+    # same size, would be judged against the stale .pyc. Seen in the eval fixture (calc-add).
+    child_env["PYTHONDONTWRITEBYTECODE"] = "1"
     # Tool caches land where srt allows writes: the sandbox mounts home read-only, so uv's default
     # `~/.cache/uv` fails to open and `uv run <anything>` exits 2 before the command runs (seen on
     # the first real run; the implementer's `--no-cache` reproduction command had masked it).

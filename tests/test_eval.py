@@ -312,11 +312,11 @@ def test_a_task_can_point_at_a_real_repository_and_ref(tmp_path: Path) -> None:
     (source / "calc.py").write_text("def add(a, b):\n    return a + b\n")
     git(source, "-c", "user.name=t", "-c", "user.email=t@t.invalid", "commit", "-q", "-am", "the fix")
     fixed = git(source, "rev-parse", "HEAD").stdout.strip()
-    git(source, "tag", "fixed-tag")
+    git(source, "-c", "tag.gpgsign=false", "tag", "fixed-tag")
     write_tree(tmp_path / "evals" / "hidden", {"tests/test_hidden_calc.py": HIDDEN_TEST})
     (tmp_path / "evals" / "tasks").mkdir(parents=True)
     (tmp_path / "evals" / "tasks" / "real.yaml").write_text(
-        f"id: real\nkind: fix-bug\nrepo: {source}\nref: {buggy[:12]}\ninstruction: fix add\n"
+        f"id: real\nkind: fix-bug\nrepo: {source}\nref: '{buggy[:12]}'\ninstruction: fix add\n"
         "planned_files: [calc.py]\nverifier: {command: python3 -m unittest tests.test_hidden_calc, files: ../hidden}\n"
     )
     [loaded] = load_tasks(tmp_path / "evals" / "tasks")

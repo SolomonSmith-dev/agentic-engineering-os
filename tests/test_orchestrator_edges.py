@@ -531,6 +531,17 @@ def test_a_non_utf8_config_yaml_is_reported_before_the_run(repo: Path, monkeypat
     assert RunStore.open(repo, create=False) is None, "refused before recording a run"
 
 
+def test_orchestrator_commands_write_no_bytecode(tmp_path: Path) -> None:
+    """A check that compiled the old file must not leave a .pyc a same-second, same-size fix is judged against."""
+    fake = tmp_path / "srt"
+    fake.write_text(FAKE_SRT, encoding="utf-8")
+    fake.chmod(0o755)
+    (tmp_path / "calc.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
+    env = SimpleNamespace(path=tmp_path, sandbox=Sandbox(srt=str(fake), settings_path=tmp_path / "s.json", tmp_dir=tmp_path, port_offset=0))
+    result = run_command(env, "test", f"{sys.executable} -c 'import calc'", timeout_s=30,  # type: ignore[arg-type]
+                         base_env={"PATH": os.environ["PATH"]})  # fmt: skip
+    assert result.passed, result.output
+    assert not (tmp_path / "__pycache__").exists(), "the check compiled calc.py to disk"
 def test_orchestrator_commands_keep_tool_caches_inside_the_sandbox(tmp_path: Path) -> None:
     """srt mounts home read-only, so uv's default ~/.cache/uv must never be the cache a check uses."""
     fake = tmp_path / "srt"
