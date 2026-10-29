@@ -46,6 +46,7 @@ from agent_team.eval.store import RESULTS
 from agent_team.memory import DEFAULT_COMMAND_TIMEOUT_S, MEMORY_DIR, InspectError, inspect_repo, render_memory_summary
 from agent_team import lessons as lessons_mod
 from agent_team.orchestrator import OrchestratorError, default_executor_factory, resume_workflow, run_workflow
+from agent_team.paths import default_canonical_dir
 from agent_team.routing import REGISTRY_PATH, RegistryError, default_registry_path, load_registry, resolve_model
 from agent_team.run_agent import RunAgentError, load_canonical, run_agent
 from agent_team.runs import RunStore, RunStoreError, UnknownRunError, render_run_list, render_trace
@@ -90,12 +91,13 @@ def main(
 
 @app.command()
 def validate(
-    path: Path = typer.Argument(
-        Path("canonical"),
+    path: Path | None = typer.Argument(
+        None,
         help="Directory holding agents/, skills/, workflows/, tools/ and policies/; routing/ beside it is checked too.",
     ),
 ) -> None:
     """Validate every file under canonical/ against the canonical schemas."""
+    path = path or default_canonical_dir()
     report = validate_tree(path)
     for problem in report.problems:
         typer.echo(problem.render(), err=True)
@@ -142,7 +144,7 @@ def init_repo(
 @app.command()
 def configure(
     repo: Path = typer.Argument(Path("."), help="Target repository; defaults to the current directory."),
-    canonical: Path = typer.Option(Path("canonical"), "--canonical", help="Directory holding the canonical files."),
+    canonical: Path | None = typer.Option(None, "--canonical", show_default="./canonical, else the install's own copy", help="Directory holding the canonical files."),
     registry: Path | None = typer.Option(
         None, "--registry", help="Model registry; defaults to routing/registry.yaml next to --canonical."
     ),
@@ -150,6 +152,7 @@ def configure(
     dry_run: bool = typer.Option(False, "--dry-run", help="Show the diff and write nothing."),
 ) -> None:
     """Turn the approved proposal into .agent-team/config.yaml and runtime files, showing the diff first."""
+    canonical = canonical or default_canonical_dir()
     try:
         plan = plan_configure(repo, canonical, registry_path=registry, require_approved=not dry_run)
     except (BootstrapError, RunStoreError) as exc:
@@ -261,7 +264,7 @@ def run(
     ),
     prompt_file: Path | None = typer.Option(None, "--prompt-file", help="Read the prompt from this file."),
     repo: Path = typer.Option(Path("."), "--repo", "-C", help="Target repository; defaults to the current directory."),
-    canonical: Path = typer.Option(Path("canonical"), "--canonical", help="Directory holding the canonical files."),
+    canonical: Path | None = typer.Option(None, "--canonical", show_default="./canonical, else the install's own copy", help="Directory holding the canonical files."),
     registry: Path | None = typer.Option(
         None, "--registry", help="Model registry; defaults to routing/registry.yaml next to --canonical."
     ),
@@ -276,6 +279,7 @@ def run(
     ),
 ) -> None:
     """Run one canonical agent (--agent) or a workflow (--workflow), and record everything it does."""
+    canonical = canonical or default_canonical_dir()
     if (agent is None) == (workflow is None):
         typer.echo("error: give exactly one of --agent or --workflow", err=True)
         raise typer.Exit(code=2)
@@ -367,7 +371,7 @@ def run(
 def resume(
     run_id: str = typer.Argument(..., help="The interrupted workflow run to re-enter."),
     repo: Path = typer.Option(Path("."), "--repo", "-C", help="Target repository; defaults to the current directory."),
-    canonical: Path = typer.Option(Path("canonical"), "--canonical", help="Directory holding the canonical files."),
+    canonical: Path | None = typer.Option(None, "--canonical", show_default="./canonical, else the install's own copy", help="Directory holding the canonical files."),
     registry: Path | None = typer.Option(
         None, "--registry", help="Model registry; defaults to routing/registry.yaml next to --canonical."
     ),
@@ -380,6 +384,7 @@ def resume(
     typecheck_command: list[str] = typer.Option([], "--typecheck-command", help="Type-check command the TEST step runs (repeatable)."),
 ) -> None:
     """Re-enter an interrupted workflow run at its last checkpoint; its worktrees were kept."""
+    canonical = canonical or default_canonical_dir()
     claude = _claude_or_exit()
     factory = default_executor_factory(
         repo=repo,
@@ -413,7 +418,7 @@ def inspect_cmd(
     summary: bool = typer.Option(
         False, "--summary", help="Print the stored map and every command's verification result; run nothing."
     ),
-    canonical: Path = typer.Option(Path("canonical"), "--canonical", help="Directory holding the canonical files."),
+    canonical: Path | None = typer.Option(None, "--canonical", show_default="./canonical, else the install's own copy", help="Directory holding the canonical files."),
     registry: Path | None = typer.Option(
         None, "--registry", help="Model registry; defaults to routing/registry.yaml next to --canonical."
     ),
@@ -424,6 +429,7 @@ def inspect_cmd(
     ),
 ) -> None:
     """Map the repository at A0 into .agent-team/memory/repo/ and verify init's commands inside srt."""
+    canonical = canonical or default_canonical_dir()
     if summary:
         try:
             typer.echo(render_memory_summary(repo))
@@ -514,13 +520,14 @@ def eval_run(
     ),
     timeout: float = typer.Option(1800, "--timeout", min=1, help="Kill each agent call (or mini-swe-agent) after this many seconds."),
     tasks_dir: Path = typer.Option(Path("evals/tasks"), "--tasks-dir", help="Directory of task files."),
-    canonical: Path = typer.Option(Path("canonical"), "--canonical", help="Directory holding the canonical files."),
+    canonical: Path | None = typer.Option(None, "--canonical", show_default="./canonical, else the install's own copy", help="Directory holding the canonical files."),
     registry: Path | None = typer.Option(
         None, "--registry", help="Model registry; defaults to routing/registry.yaml next to --canonical."
     ),
     repo: Path = typer.Option(Path("."), "--repo", "-C", help="Repository whose .agent-team/eval/ holds the results."),
 ) -> None:
     """Plan the tasks x arms x runs matrix and print its cost; with --execute (after a dry run), run it under the caps."""
+    canonical = canonical or default_canonical_dir()
     if dry_run and execute:
         typer.echo("error: give --dry-run or --execute, not both", err=True)
         raise typer.Exit(code=2)

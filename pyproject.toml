@@ -37,6 +37,12 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_team"]
 
+# The installed tool runs from a target repository, so it carries its own canonical files and
+# model registry under agent_team/_bundled/ (see src/agent_team/paths.py).
+[tool.hatch.build.targets.wheel.force-include]
+"canonical" = "agent_team/_bundled/canonical"
+"routing" = "agent_team/_bundled/routing"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
