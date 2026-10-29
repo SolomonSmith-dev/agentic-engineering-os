@@ -53,6 +53,8 @@ from agent_team.runs.store import STATE_DIR, repo_root
 from agent_team.schemas import SCHEMAS, RunRecord, json_schema
 from agent_team.bootstrap.configure import CONFIG_NAME
 from agent_team.schemas.bootstrap import RepoConfig
+from agent_team.schemas.docs import drift as schema_drift
+from agent_team.schemas.docs import render_all as render_schema_docs
 from agent_team.schemas.eval import ARMS, ArmPlan, Caps, DryRunRecord
 
 # Runtimes `agent-team run --runtime` accepts; codex runs the independent reviewer only (step 12).
@@ -755,6 +757,28 @@ def schema_export(
     for k, schema in schemas.items():
         target = out / f"{k}.schema.json"
         target.write_text(json.dumps(schema, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        typer.echo(f"wrote {target}")
+
+
+@schema_app.command("docs")
+def schema_docs(
+    out: Path = typer.Option(Path("docs/spec"), "--out", "-o", help="Directory to write the Markdown pages into."),
+    check: bool = typer.Option(False, "--check", help="Write nothing; exit 1 if the pages in --out differ from the schemas."),
+) -> None:
+    """Generate one Markdown reference page per canonical kind from the JSON Schemas."""
+    if check:
+        problems = schema_drift(out)
+        for problem in problems:
+            typer.echo(problem, err=True)
+        if problems:
+            typer.echo(f"run 'agent-team schema docs --out {out}' to regenerate", err=True)
+            raise typer.Exit(code=1)
+        typer.echo(f"ok: {out} matches the schemas")
+        return
+    out.mkdir(parents=True, exist_ok=True)
+    for name, text in render_schema_docs().items():
+        target = out / name
+        target.write_text(text, encoding="utf-8")
         typer.echo(f"wrote {target}")
 
 
