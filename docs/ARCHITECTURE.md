@@ -312,9 +312,12 @@ Four of the five decisions are now locked; the time box is the only one still op
 | Repo > CI | GitHub Actions, hosted ubuntu + macos, Python 3.12; no self-hosted runner on a public repo |
 | Repo > install | `uv tool install git+https://github.com/SolomonSmith-dev/agentic-engineering-os@<tag>` |
 | Repo > versioning | 0.x semver; tag at each gate: 0.1 after step 6, 0.2 after step 13, 1.0 after dogfood |
-| Dogfood > timing | The employer test-bed repo after the step 13 eval passes |
+| Dogfood > timing | ARDA first, then one personal repo, both before the employer test-bed repo; the employer repo only after the stand-in dogfood meets its pass bar (2026-10-29) |
 | Dogfood > ask | Permission settled with the repo's owner. Own defaults still hold: a branch you own, nothing committed outside it, `.agent-team/` gitignored |
 | Dogfood > fallback | ARDA plus one personal repo, recorded as the onboarding eval |
+| Dogfood > stand-in pass bar | Up to three of ARDA's open issues, each pinned by a failing test on main first; pass means at least two of three draft PRs a human would merge without edits, zero writes outside the worktree, no reviewer transcript leak, under $3 per run in `trace` (2026-10-29) |
+| Dogfood > stand-in stack | ARDA's compose stack runs on the host, started by the human; the agent never starts, stops or rebuilds containers; srt allows the stack's localhost ports and keeps the docker socket denied; pre-flight is `doctor` in the repo plus one request to each stack port (2026-10-29) |
+| Eval > first pass | Step 13 eval runs on the Air in iTerm under `caffeinate`, N=1, hard ceiling $30; N=3 only if pass one costs under $10 (2026-10-29) |
 | Runs > host | The maintainer's laptop only, foreground; a second machine later as a remote-host environment for test runs over SSH, never the orchestrator |
 | Runs > state | `.agent-team/` inside the target repo, gitignored: run record SQLite, worktrees, lock file |
 | Runs > auth | Claude subscription login through the `claude` CLI |
@@ -373,7 +376,7 @@ Assumptions added:
 - Not verified, because no model was called: mini-swe-agent and litellm under srt (read-only home, the allowlist as the only network), the Anthropic API accepting `claude-opus-5-5` through litellm, litellm's price for it ($4 and $20 per million input and output tokens in its bundled map, not a first-party price), the trajectory's token keys, and the Claude result event's `usage` key names. Known gap: mini-swe-agent's commands see `ANTHROPIC_API_KEY` in their environment and could call the API outside its cost accounting.
 - Git that agent-team runs outside the sandbox on an agent-written worktree (settle, the clean check, restore, the dispose archive) first checks the worktree's pointers: its `.git` file must name its admin dir under the root's common `.git`, the admin dir's `commondir` must name that common `.git`, and no `config.worktree` may exist. Git follows `commondir` even with `GIT_DIR` and `GIT_COMMON_DIR` set (its ref store reads the file), so a repointed worktree would have made that git read a planted config (`core.fsmonitor`, filters) and run it on the host (#27). A changed pointer stops the run and `env sweep` keeps the worktree for a human. The same git also runs with those variables pinned and `core.fsmonitor=false`, and srt denies writes to `commondir`, `gitdir` and the worktree's `.git`.
 
-Still open: the time box (steps 1 to 6 this semester and 7 to 13 over winter break, or all 13 before January).
+Time box, as it happened: steps 1 to 14 landed between 2026-10-22 and 2026-10-29 (35 PRs). Next gates: the step 13 eval and its decision this week (by 2026-11-02), stand-in dogfood on ARDA the week of 2026-11-03, the employer repo only after that pass bar. Debt carried into the eval: issue 19 (step 11 follow-ups) lands as one PR after the eval; `trace --follow` lands before dogfood; the focus hook's thresholds (25 / 15 / 3) are guesses the eval judges.
 
 ## Sources
 
