@@ -156,6 +156,8 @@ def _read(path: Path) -> str | None:
         return path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return None
+    except UnicodeDecodeError as exc:
+        raise BootstrapError(f"{path} is not UTF-8 text; convert it to UTF-8 and re-run configure") from exc
 
 
 def _unlinked(root: Path, rel: str) -> bool:
