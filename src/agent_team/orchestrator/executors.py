@@ -43,6 +43,7 @@ from agent_team.orchestrator.workspace import (
     WorkspaceError,
     changed_files,
     diff_evidence,
+    ensure_run_branch,
     head_of,
     is_artifact,
     is_clean,
@@ -485,8 +486,10 @@ class DefaultExecutor:
             env = self._workflow_env(given.run_id, given.workflow)
         except AllocatorError as exc:
             return no_pr(str(exc))
-        if env.meta.branch != branch:
-            return no_pr(f"the worktree is on {env.meta.branch}, not the run branch")
+        try:
+            ensure_run_branch(env, given.run_id)
+        except AllocatorError as exc:
+            return no_pr(str(exc))
         refusals = self._pr_refusals(env, given.workflow)
         if refusals:
             return no_pr("; ".join(refusals))

@@ -519,6 +519,14 @@ def test_a_worktree_on_another_branch_is_not_the_run_branch() -> None:
     assert ensure_run_branch(SimpleNamespace(meta=SimpleNamespace(branch="agent-team/r1")), "r1") == "agent-team/r1"  # type: ignore[arg-type]
 
 
+def test_pr_uses_ensure_run_branch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ex = executor(tmp_path)
+    monkeypatch.setattr(ex, "_workflow_env", lambda *_: SimpleNamespace(meta=SimpleNamespace(branch="main")))
+    result = ex._pr(at_pr("abc"))
+    assert result.escalate and result.evidence["pr"]["status"] == "not_opened"
+    assert f"is not the run branch agent-team/{RUN}" in result.evidence["pr"]["reason"]
+
+
 def test_a_non_utf8_config_yaml_is_reported_before_the_run(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (repo / ".agent-team").mkdir(exist_ok=True)
     (repo / ".agent-team" / "config.yaml").write_bytes(b"autonomy_ceiling: caf\xe9\n")
