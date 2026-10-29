@@ -259,6 +259,28 @@ def run_command(env: Environment, kind: str, command: str, *, timeout_s: float, 
     return CommandResult(kind, command, code, duration, out[-MAX_OUTPUT_BYTES:].decode("utf-8", errors="replace"))
 
 
+# Exit codes that mean the reproduction command did not run its check at all. A gate that takes
+# any non-zero exit as "the bug reproduces" passed a uv cache error (exit 2) and a pytest `-k`
+# that matched nothing (exit 5) on the first real runs.
+_RUNNER_ERROR_EXITS: dict[str, dict[int, str]] = {
+    "pytest": {2: "interrupted or usage error", 3: "internal error", 4: "usage error", 5: "no tests collected"},
+}
+
+
+def reproduction_error(command: str, ran: CommandResult) -> str | None:
+    """Why `ran` is an errored command rather than a failing check, or None when it is a real failure."""
+    if ran.exit_code is None:
+        return "the command timed out"
+    if ran.exit_code == 126:
+        return "exit 126: the command is not executable"
+    if ran.exit_code == 127:
+        return "exit 127: the command was not found"
+    for runner, codes in _RUNNER_ERROR_EXITS.items():
+        if runner in command.split() and ran.exit_code in codes:
+            return f"{runner} exit {ran.exit_code}: {codes[ran.exit_code]}, not a failing test"
+    return None
+
+
 def render_results(results: Iterable[CommandResult], header: str) -> str:
     parts = [header]
     for r in results:
