@@ -24,7 +24,7 @@ from typing import Any
 import yaml
 
 from agent_team.adapters.claude.capabilities import Permissions, resolve
-from agent_team.environments.sandbox import HOME_LOGIN_DIRS, HOME_LOGIN_FILES, KEY_FILES
+from agent_team.environments.sandbox import HOME_LOGIN_DIRS, HOME_LOGIN_FILES, KEY_FILES, DenyRead, srt_deny_read
 from agent_team.schemas.adapter import OUTPUT_SCHEMAS
 from agent_team.schemas.agent import AgentSpec
 from agent_team.schemas.common import Autonomy
@@ -44,6 +44,10 @@ DEFAULT_PROTECTED: tuple[str, ...] = (
 # its scan of every word in a command would also block `jq .key` or `event.key`.
 PROTECTED_FILES: tuple[str, ...] = KEY_FILES
 
+# The Claude worker reads its own login and config here, so srt cannot deny it; the hook and
+# the Read/Edit/Write deny rules still keep the agent's tools out of it.
+CLAUDE_HOME = "~/.claude/"
+
 PERMISSION_MODE = "dontAsk"
 
 # Claude Code adds this tool when --json-schema is set and the agent returns its answer through
@@ -62,6 +66,7 @@ class CompiledAgent:
     settings_json: Path
     policy_json: Path
     native_md: Path
+    deny_read: list[DenyRead]  # srt denyRead entries for a sandboxed run: protected paths but ~/.claude
     schema_json: Path | None
     permissions: Permissions
 
@@ -117,11 +122,13 @@ def compile_agent(
     home: Path,
     test_commands: tuple[str, ...] = (),
     sandboxed: bool = False,
+    keep: tuple[Path, ...] = (),
     python: str = sys.executable,
 ) -> CompiledAgent:
     """Write the compiled files for one agent under `out_dir` and describe them.
 
-    `roots[0]` is the session's working directory, the only place file tools may write.
+    `roots[0]` is the session's working directory, the only place file tools may write. `keep`
+    names paths the run needs that a protected pattern would hide (its worktree and temp dir).
     """
     deny = [*agent.capabilities.deny, *policy.denied_capabilities]
     permissions = resolve(agent.capabilities.allow, deny, ceiling, test_commands=test_commands, sandboxed=sandboxed)
@@ -206,4 +213,10 @@ def compile_agent(
         native_md=native_md,
         schema_json=schema_json,
         permissions=permissions,
+        deny_read=srt_deny_read(
+            [p for p in dict.fromkeys([*protected, *PROTECTED_FILES]) if not p.startswith(CLAUDE_HOME)],
+            roots,
+            home,
+            [*keep, out_dir],
+        ),
     )

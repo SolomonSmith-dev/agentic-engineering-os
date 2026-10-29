@@ -33,7 +33,8 @@ from agent_team.adapters.codex import (
     srt_deny_read,
     strict_schema,
 )
-from agent_team.adapters.codex.invoke import Invocation, check_flags, execute, has_auth
+from agent_team.adapters.codex.compile import codex_home_deny_read
+from agent_team.adapters.codex.invoke import CodexUnavailableError, Invocation, check_flags, execute, has_auth
 from agent_team.canonical import parse_file
 from agent_team.cli import app
 from agent_team.environments import srt_path
@@ -189,25 +190,51 @@ def test_protected_paths_compile_to_srt_deny_read_around_the_run(tmp_path: Path)
     assert all(not str(worktree).startswith(p) for p in literal), "the run's own checkout stays readable"
 
 
+
+def test_a_caller_codex_home_is_denied_as_given_and_resolved(tmp_path: Path) -> None:
+    home, run_tmp = tmp_path / "home", tmp_path / "repo" / ".agent-team" / "tmp" / "r1"
+    real = tmp_path / "secrets" / "codex"
+    for d in (home, run_tmp, real):
+        d.mkdir(parents=True)
+    (home / "codex-link").symlink_to(real)
+    assert codex_home_deny_read(str(real), home, [run_tmp]) == [{"path": str(real), "literal": True}]
+    assert codex_home_deny_read(str(home / "codex-link"), home, [run_tmp]) == [
+        {"path": str(home / "codex-link"), "literal": True}, {"path": str(real), "literal": True}]  # fmt: skip
+    assert codex_home_deny_read(None, home, [run_tmp]) == codex_home_deny_read("  ", home, [run_tmp]) == []
+    assert codex_home_deny_read("relative/codex", home, [run_tmp]) == [], "no stable path to deny"
+    # A CODEX_HOME that is home itself, or holds the run, loses only its login file, not the run's own files.
+    assert codex_home_deny_read(str(home), home, [run_tmp]) == [{"path": str(home / "auth.json"), "literal": True}]
+    assert codex_home_deny_read(str(tmp_path / "repo"), home, [run_tmp]) == [
+        {"path": str(tmp_path / "repo" / "auth.json"), "literal": True}]  # fmt: skip
+
+
+def test_compile_denies_codex_home_and_the_default_login(tmp_path: Path) -> None:
+    custom = tmp_path / "custom-codex"
+    compiled = _compiled(tmp_path, codex_home=str(custom))
+    assert {"path": str(custom), "literal": True} in compiled.deny_read
+    assert any(str(d).endswith("/.codex/**") for d in compiled.deny_read)
+
+
 # --- invocation -----------------------------------------------------------------
 
 BASE_ENV = {
     "PATH": "/usr/bin",
     "HOME": "/home/u",
     "LANG": "C.UTF-8",
-    "CODEX_HOME": "/home/u/.codex",
+    "CODEX_HOME": "/home/u/custom-codex",
     "GH_TOKEN": "ghp_INVOKECANARY0000000000",
     "OPENAI_API_KEY": "sk-proj-NOTPASSEDCANARY000000000",
     "CLAUDE_CODE_SESSION_ID": "parent-session",
 }
 
 
-def test_login_mode_argv_and_scrubbed_env(tmp_path: Path) -> None:
+def test_api_key_mode_argv_and_scrubbed_env(tmp_path: Path) -> None:
     sandbox = Sandbox(srt=None, settings_path=None, tmp_dir=tmp_path / "t", port_offset=100)
     compiled = _compiled(tmp_path)
-    inv = build_invocation(compiled, codex="/bin/codex", sandbox=sandbox, base_env=BASE_ENV, cwd=tmp_path / "wt")
+    env = {**BASE_ENV, "CODEX_API_KEY": "sk-proj-CODEXKEYCANARY00000000"}
+    inv = build_invocation(compiled, codex="/bin/codex", sandbox=sandbox, base_env=env, cwd=tmp_path / "wt")
     argv = inv.argv
-    assert inv.mode == "login"
+    assert inv.mode == "api_key"
     assert argv[:2] == ["/bin/codex", "exec"] and argv[-1] == "-", "the prompt comes in on stdin"
     for flag in ("--json", "--ignore-user-config", "--ignore-rules", "--ephemeral"):
         assert flag in argv
@@ -220,8 +247,21 @@ def test_login_mode_argv_and_scrubbed_env(tmp_path: Path) -> None:
     [instructions] = [c for c in configs if c.startswith("developer_instructions=")]
     assert tomllib.loads(instructions)["developer_instructions"] == compiled.overrides["developer_instructions"]
     assert "--dangerously-bypass-approvals-and-sandbox" not in argv and "danger-full-access" not in argv
-    assert inv.env == {"PATH": "/usr/bin", "HOME": "/home/u", "LANG": "C.UTF-8", "CODEX_HOME": "/home/u/.codex",
+    assert inv.env == {"PATH": "/usr/bin", "HOME": "/home/u", "LANG": "C.UTF-8", "CODEX_API_KEY": env["CODEX_API_KEY"],
+                       "CODEX_HOME": str(tmp_path / "t" / "codex-home"),
                        "TMPDIR": str(tmp_path / "t"), "AGENT_TEAM_PORT_OFFSET": "100"}  # fmt: skip
+    assert (tmp_path / "t" / "codex-home").is_dir(), "codex gets an empty home of its own, never the caller's"
+
+
+def test_build_invocation_requires_codex_api_key(tmp_path: Path) -> None:
+    with pytest.raises(CodexUnavailableError, match="set CODEX_API_KEY"):
+        build_invocation(
+            _compiled(tmp_path),
+            codex="/bin/codex",
+            sandbox=Sandbox(srt=None, settings_path=None, tmp_dir=tmp_path / "t", port_offset=0),
+            base_env=BASE_ENV,
+            cwd=tmp_path,
+        )
 
 
 def test_api_key_mode_passes_only_codex_api_key(tmp_path: Path) -> None:
@@ -329,7 +369,7 @@ def test_budget_is_checked_after_the_run_from_a_registry_price() -> None:
 
 
 def test_timeout_kills_the_whole_worker_process_group(tmp_path: Path) -> None:
-    inv = Invocation(argv=["sh", "-c", "sleep 60 & sleep 60"], env=dict(os.environ), mode="login")
+    inv = Invocation(argv=["sh", "-c", "sleep 60 & sleep 60"], env=dict(os.environ), mode="api_key")
     start = time.monotonic()
     result, _ = execute(inv, prompt="", cwd=tmp_path, stderr_path=tmp_path / "err", timeout_s=1)
     assert result.status == "timeout"
@@ -366,6 +406,8 @@ repo = os.path.dirname(os.path.dirname(os.path.dirname(cwd)))  # <repo>/.agent-t
 schema = argv[argv.index("--output-schema") + 1]
 seen = {{"argv": argv, "env": dict(os.environ), "stdin": sys.stdin.read(), "cwd": cwd,
          "env_file_readable": readable(os.path.join(repo, ".env")),
+         "codex_auth_readable": readable(os.path.join(os.path.expanduser("~"), ".codex", "auth.json")),
+         "custom_codex_auth_readable": readable({custom_auth!r}),
          "runs_db_readable": readable(os.path.join(repo, ".agent-team", "runs.db")),
          "schema_readable": readable(schema), "app_readable": readable(os.path.join(cwd, "app.py"))}}
 with open(os.path.join(os.environ["TMPDIR"], "fake-codex.json"), "w") as out:
@@ -400,14 +442,22 @@ def fake_codex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                 "failed": events(end="failed"), "invalid": events("not json"), "hang": []}[mode]  # fmt: skip
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir(exist_ok=True)
+        custom_home = tmp_path / "custom-codex-home"  # a CODEX_HOME outside ~/.codex holds a login too
+        custom_home.mkdir(exist_ok=True)
+        (custom_home / "auth.json").write_text('{"access_token":"custom"}\n', encoding="utf-8")
+        monkeypatch.setenv("CODEX_HOME", str(custom_home))
         fake = bin_dir / "codex"
-        fake.write_text(FAKE_CODEX.format(python=sys.executable, flags=flags, logged_in=logged_in,
-                                          mode=mode, events=evts), encoding="utf-8")  # fmt: skip
+        fake.write_text(FAKE_CODEX.format(python=sys.executable, flags=flags, logged_in=logged_in, mode=mode,
+                                          events=evts, custom_auth=str(custom_home / "auth.json")), encoding="utf-8")  # fmt: skip
         fake.chmod(0o755)
         monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
         monkeypatch.setenv("GH_TOKEN", "ghp_E2ECANARY000000000000")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-E2ECANARY0000000000000")
-        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.setenv("CODEX_API_KEY", "sk-proj-CODEXKEYCANARY00000000")
+        home = tmp_path / "home"
+        (home / ".codex").mkdir(parents=True, exist_ok=True)
+        (home / ".codex" / "auth.json").write_text('{"access_token":"test"}\n', encoding="utf-8")
+        monkeypatch.setenv("HOME", str(home))
         return fake
 
     return _install
@@ -451,16 +501,23 @@ def test_codex_reviewer_end_to_end(repo: Path, fake_codex, srt: str) -> None:
     assert seen["stdin"] == "Review the diff against AC-1." and seen["argv"][-1] == "-"
     assert seen["cwd"] == run.worktree_path
     assert seen["argv"][seen["argv"].index("--model") + 1] == MODEL, "the registry resolves independent on codex"
-    for leaked in ("GH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY"):
+    for leaked in ("GH_TOKEN", "OPENAI_API_KEY"):
         assert leaked not in seen["env"]
+    # codex itself needs the key; keeping it from the commands it runs is shell_environment_policy's job.
+    assert seen["env"]["CODEX_API_KEY"] == "sk-proj-CODEXKEYCANARY00000000"
+    assert seen["env"]["CODEX_HOME"] == str(repo / ".agent-team" / "tmp" / run.run_id / "codex-home")
     assert not seen["env_file_readable"], "srt denyRead hides the target repo's .env"
+    assert not seen["codex_auth_readable"], "srt denyRead hides ~/.codex/auth.json from reviewer commands"
+    assert not seen["custom_codex_auth_readable"], "and the login under a CODEX_HOME set in the caller's shell"
     assert not seen["runs_db_readable"], "and the run record"
     assert seen["schema_readable"] and seen["app_readable"], "but not the run's own checkout or compiled files"
 
     settings = json.loads((repo / ".agent-team" / "sandbox" / f"{run.run_id}.json").read_text())
-    assert {"chatgpt.com", "auth.openai.com"} <= set(settings["network"]["allowedDomains"])
-    assert "api.openai.com" not in settings["network"]["allowedDomains"], "login mode needs no API host"
+    assert "api.openai.com" in settings["network"]["allowedDomains"]
+    assert "chatgpt.com" not in settings["network"]["allowedDomains"]
+    assert "auth.openai.com" not in settings["network"]["allowedDomains"]
     assert f"{repo}/**/.env*" in settings["filesystem"]["denyRead"]
+    assert any(str(d).endswith("/.codex/**") for d in settings["filesystem"]["denyRead"])
     compiled = repo / ".agent-team" / "compiled" / run.run_id
     assert (compiled / "agents" / "independent-reviewer.toml").is_file() and (compiled / "config.toml").is_file()
     assert not (repo / ".codex").exists() and not (repo / ".claude").exists()
@@ -493,10 +550,11 @@ def test_codex_timeout_is_recorded(repo: Path, fake_codex, srt: str) -> None:
     assert run.outcome == "failed" and transitions[-1].note == "timeout: exit -9"
 
 
-def test_codex_refuses_without_auth_before_recording(repo: Path, fake_codex) -> None:
+def test_codex_refuses_without_auth_before_recording(repo: Path, fake_codex, monkeypatch: pytest.MonkeyPatch) -> None:
     fake_codex(logged_in=False)
+    monkeypatch.delenv("CODEX_API_KEY", raising=False)
     result = invoke_run(repo)
-    assert result.exit_code == 2 and "codex has no auth" in result.output
+    assert result.exit_code == 2 and "set CODEX_API_KEY for this shell" in result.output
     assert RunStore.open(repo, create=False) is None
 
 

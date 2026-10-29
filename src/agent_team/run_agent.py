@@ -218,7 +218,11 @@ def run_agent(
                 home=Path.home(),
                 test_commands=test_commands,
                 sandboxed=environment.sandbox.sandboxed,
+                keep=(environment.path, environment.sandbox.tmp_dir),
             )
+            if environment.sandbox.sandboxed:
+                # The hook is a tripwire; srt is what keeps a Bash command from reading .env or a key file.
+                extend_settings(environment.sandbox, deny_read=compiled.deny_read)
             notes = [environment.note(env_spec.name), resolved.note()]
             if replaced is not None:
                 notes.append(f"took over a stale lock from run {replaced.run_id} (pid {replaced.pid})")
@@ -308,6 +312,7 @@ def _run_codex(
         home=Path.home(),
         keep=[environment.path, environment.sandbox.tmp_dir],
         test_commands=test_commands,
+        codex_home=base_env.get("CODEX_HOME"),
     )
     extend_settings(
         environment.sandbox,
