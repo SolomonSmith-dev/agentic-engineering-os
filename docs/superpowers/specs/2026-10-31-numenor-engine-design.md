@@ -29,7 +29,7 @@ Goals (each names what it adds):
 
 Non-goals: PyPI publishing, a Claude Code plugin wrapper, the twelve unbuilt specialist agents of ARCHITECTURE section 4, a feature workflow, Copilot or Gemini adapters, any Hermes code or import inside agent-team, any scheduler (the tick is Numenor's launchd job), merging PRs.
 
-Anti-goals (a failure even if it works): agent-team merges or pushes to a default branch; a budget is exceeded with exit 0; a task file's fields other than `result` are rewritten; a CourtRules or Saurabh mention reaches this public repo; agent-crew or agent-factory git history is merged in.
+Anti-goals (a failure even if it works): agent-team merges or pushes to a default branch; a budget is exceeded with exit 0; a task file's fields other than `result` are rewritten; a client project or third-party person's name reaches this public repo; agent-crew or agent-factory git history is merged in.
 
 ## 3. Constraints
 
