@@ -74,10 +74,10 @@ Attackers: R2, R3. Assets A1, A2, A3.
 Mitigations:
 
 - **The worker's environment is built from an allowlist,** not inherited, so `GH_TOKEN`, `GITHUB_TOKEN` and cloud credentials never reach it (`ENV_ALLOWLIST` and `build_invocation` in `src/agent_team/adapters/claude/invoke.py` and `src/agent_team/adapters/codex/invoke.py`).
-- **srt denies reads of `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.git-credentials`, `~/.netrc` and the home registry, cluster and cloud logins (`HOME_LOGIN_DIRS` minus `~/.gnupg`, `HOME_LOGIN_FILES`) for every sandboxed process** (`DENY_READ_HOME` in `sandbox.py`).
-- **The same paths, plus `~/.config/gcloud`, `~/.gnupg` and `~/.claude`, are compiled into deny rules and the PreToolUse hook; key files by name (`KEY_FILES`) into deny rules only** (`DEFAULT_PROTECTED`, `PROTECTED_FILES` in `compile.py`, `src/agent_team/adapters/claude/hook.py`).
+- **srt denies reads of `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.git-credentials`, `~/.netrc`, `~/.codex` and the home registry, cluster and cloud logins (`HOME_LOGIN_DIRS` minus `~/.gnupg`, `HOME_LOGIN_FILES`) for every sandboxed process** (`DENY_READ_HOME` in `sandbox.py`).
+- **The same paths, `~/.codex` among them, plus `~/.config/gcloud`, `~/.gnupg` and `~/.claude`, are compiled into deny rules and the PreToolUse hook; key files by name (`KEY_FILES`) into deny rules only** (`DEFAULT_PROTECTED`, `PROTECTED_FILES` in `compile.py`, `src/agent_team/adapters/claude/hook.py`).
 - **Sandboxed Claude runs also srt-deny every protected path except `~/.claude`,** including `~/.config/gcloud`, `~/.gnupg` and key files by name (T3).
-- **Codex runs on `CODEX_API_KEY` only, with an empty `CODEX_HOME` of its own; `~/.codex/**` and a caller's `CODEX_HOME` are srt read-denied** (`auth_mode`, `build_invocation` in `src/agent_team/adapters/codex/invoke.py`; `CODEX_PROTECTED`, `codex_home_deny_read` in `compile.py`).
+- **Codex runs on `CODEX_API_KEY` only, with an empty `CODEX_HOME` of its own; `~/.codex/**` and a caller's `CODEX_HOME` are srt read-denied** (`auth_mode`, `build_invocation` in `src/agent_team/adapters/codex/invoke.py`; `DENY_READ_HOME` in `sandbox.py`; `codex_home_deny_read` in `compile.py`).
 - **`gh` is denied in every session,** and the orchestrator alone holds the GitHub credential (`pr.py`).
 
 Residual:

@@ -76,13 +76,9 @@ def sandbox_refusal(sandbox: Sandbox) -> str | None:
     return "the run's environment is not wrapped in srt; agent-team runs repository commands only inside srt"
 
 
-# Inspect never runs a Codex worker, so the Codex login is denied here too.
-INSPECT_PROTECTED: tuple[str, ...] = ("~/.codex/**",)
-
-
 def protect(sandbox: Sandbox, policy: PolicySpec, *, root: Path, worktree: Path, home: Path) -> None:
     """Add srt read denies for the policy's protected paths, keeping the run's own checkout and temp dir."""
-    protected = list(dict.fromkeys([*policy.protected_paths, *DEFAULT_PROTECTED, *PROTECTED_FILES, *INSPECT_PROTECTED]))
+    protected = list(dict.fromkeys([*policy.protected_paths, *DEFAULT_PROTECTED, *PROTECTED_FILES]))
     keep = [worktree, sandbox.tmp_dir]
     extend_settings(sandbox, deny_read=srt_deny_read(protected, [worktree, root], home, keep))
 

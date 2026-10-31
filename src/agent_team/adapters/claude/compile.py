@@ -35,6 +35,8 @@ from agent_team.schemas.skill import SkillSpec
 # Protected in every compiled session on top of the policy's own list (architecture section 8).
 DEFAULT_PROTECTED: tuple[str, ...] = (
     ".env*", "*.pem", "~/.ssh/**", "~/.aws/**", "~/.config/gcloud/**", "~/.claude/**",
+    # The Codex login: Codex itself runs on CODEX_API_KEY with an empty per-run CODEX_HOME.
+    "~/.codex/**",
     # GitHub credentials: the orchestrator holds github.*, and a worker must never read the token.
     "~/.config/gh/**", "~/.git-credentials", "~/.netrc",
     # Registry, cluster and cloud logins a build tool would pick up from home.
