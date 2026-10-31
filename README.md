@@ -170,18 +170,19 @@ agent-team run --workflow bug-fix --repo /path/to/target \
 `agent-team run --runtime codex` runs the independent reviewer through `codex exec --json` instead of Claude Code (build-order step 12). It is opt-in: the locked MVP reviewer stays on Claude, and `--runtime codex` is accepted only for `independent-reviewer`. **This adapter has not been run against a real Codex yet**: there is no Codex key in the MVP, and every test drives a fake `codex` that replays the JSONL event stream.
 
 ```bash
-export CODEX_API_KEY=...   # required for --runtime codex
+export CODEX_API_KEY=...   # or leave it unset and use your `codex login`
 agent-team run --agent independent-reviewer --runtime codex \
   --repo /path/to/target --test-command "uv run pytest" --prompt-file review-request.md
 ```
 
 - The model comes from `runtime_classes.codex` in `routing/registry.yaml`: `independent` resolves to `gpt-6.1-sol` there, and to `claude-opus-5-5` everywhere else. `--model` must name a registry entry on the codex runtime.
-- The run is refused before anything is recorded when `codex` is not on PATH, `CODEX_API_KEY` is unset, `codex exec --help` lacks a flag the adapter passes, or when `srt` is absent.
+- The run is refused before anything is recorded when `codex` is not on PATH, neither `CODEX_API_KEY` nor a ChatGPT `codex login` is found, `codex exec --help` lacks a flag the adapter passes, or when `srt` is absent.
 - Compiled files go to `.agent-team/compiled/<run-id>/`: `agents/independent-reviewer.toml` (the Codex agent shape), `config.toml` (the session settings, passed as `-c key=value`) and `schema.json` (the verdict schema in OpenAI strict form, passed as `--output-schema`). Nothing is written into the target repository's `.codex/`.
-- Codex has no per-command permission rules and this adapter uses no Codex hook, so the reviewer runs in Codex's `read-only` sandbox, and protected paths (`.env*`, `*.pem`, `~/.ssh`, `~/.claude`, `~/.codex` and `$CODEX_HOME`, `.agent-team/` apart from the run's own checkout) become srt `denyRead` rules that hold for Codex and every command it runs. That is why srt is required. The srt allowlist gains only `api.openai.com` for API-key auth.
+- Codex has no per-command permission rules and this adapter uses no Codex hook, so the reviewer runs in Codex's `read-only` sandbox, and protected paths (`.env*`, `*.pem`, `~/.ssh`, `~/.claude`, `~/.codex` and `$CODEX_HOME`, `.agent-team/` apart from the run's own checkout) become srt `denyRead` rules that hold for Codex and every command it runs. That is why srt is required. The srt allowlist gains only `api.openai.com` for API-key auth, and only the login proxy's `127.0.0.1:<port>` for login mode.
 - The session ignores your `~/.codex/config.toml` and execpolicy rules and writes no session file (`--ignore-user-config --ignore-rules --ephemeral`). Shell commands get only core environment variables, never one named like a key, secret or token.
 - Codex reports tokens, not dollars, and has no budget flag. Cost is recorded only when the registry entry has a `cost` (none does yet), and `--max-budget-usd` is then checked after the run ends; otherwise `--timeout` is the only cap. The run record's transition note lists every capability the Codex runtime ran without.
-- `~/.codex/**`, and your `CODEX_HOME` if you set one, are denied in the sandbox for the whole run, so `--runtime codex` relies on `CODEX_API_KEY`, not a `codex login`. Codex runs with an empty `CODEX_HOME` in the run's temp directory.
+- `~/.codex/**`, and your `CODEX_HOME` if you set one, are denied in the sandbox for the whole run. Codex runs with an empty `CODEX_HOME` in the run's temp directory.
+- Auth: `CODEX_API_KEY` when it is set, passed to the `codex` process only. Otherwise your ChatGPT `codex login` (`$CODEX_HOME/auth.json`, or `~/.codex/auth.json`), which never enters the sandbox: agent-team starts a proxy on `127.0.0.1` outside srt for the length of the run (`src/agent_team/adapters/codex/login_proxy.py`). Codex gets a random per-run key for that proxy and `openai_base_url` pointing at it; the proxy checks the key, swaps in your access token and account id, and forwards only `/backend-api/codex/` requests to chatgpt.com. When the token is near expiry or the backend answers 401, the proxy refreshes it as Codex does and writes the rotated tokens back to `auth.json`, but only if the file still holds the tokens it read. A login kept in the OS keyring (`cli_auth_credentials_store = "keyring"`) is not found; use file storage or `CODEX_API_KEY`.
 
 ## Eval: the team against two baselines
 
