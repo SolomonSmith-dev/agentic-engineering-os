@@ -1,12 +1,16 @@
 """Invoke a compiled agent with `codex exec --json` and normalize what comes back (build-order step 12).
 
-Auth mode is API key only, read from `CODEX_API_KEY`:
+Two auth modes, chosen from the environment; neither is read or stored by value here:
 
-- the key is passed to the `codex` process only, never persisted by value.
-- shell commands run with Codex's shell-environment excludes enabled.
-- `~/.codex/**`, and the caller's `CODEX_HOME` when set, can therefore stay
-  denied by srt for every command in the run. Codex itself gets an empty
-  `CODEX_HOME` in the run's temp directory.
+- api_key: `CODEX_API_KEY`, passed to the `codex` process only.
+- login (when no key is set): your `codex login`, held by a host-side proxy
+  (`login_proxy.py`). Codex gets a random per-run key for that proxy instead, and
+  the login itself never enters the sandbox.
+
+Either way shell commands run with Codex's shell-environment excludes enabled,
+and `~/.codex/**`, and the caller's `CODEX_HOME` when set, stay denied by srt
+for every command in the run. Codex itself gets an empty `CODEX_HOME` in the
+run's temp directory.
 
 The session never loads your `config.toml` (`--ignore-user-config`), your or
 the repository's execpolicy rules (`--ignore-rules`), or writes a session file
@@ -40,6 +44,7 @@ from pydantic import BaseModel, ValidationError
 from agent_team.adapters.claude.invoke import ENV_ALLOWLIST as CLAUDE_ENV_ALLOWLIST
 from agent_team.adapters.claude.invoke import STDERR_TAIL_CHARS
 from agent_team.adapters.codex.compile import CompiledCodexAgent, toml_value
+from agent_team.adapters.codex.login_proxy import LoginProxy, has_login, login_path
 from agent_team.environments.sandbox import Sandbox
 from agent_team.runs.redact import redact_text
 from agent_team.runs.store import RunStore
@@ -55,10 +60,12 @@ ENV_ALLOWLIST: tuple[str, ...] = CLAUDE_ENV_ALLOWLIST
 # CODEX_HOME for the run, under the run's temp dir; the caller's CODEX_HOME is never passed.
 CODEX_HOME_DIR = "codex-home"
 
-# Hosts the srt allowlist needs for Codex API-key auth.
+# Hosts the srt allowlist needs for each auth mode. Login mode reaches only the proxy's port,
+# which `LoginProxy.allowed_domain` names once it is bound.
 # unverified: that this is the full host list a run reaches.
 API_DOMAINS: dict[str, tuple[str, ...]] = {
     "api_key": ("api.openai.com",),
+    "login": (),
 }
 
 # Flags this adapter passes; `codex exec --help` must list every one, or the run is refused.
@@ -72,7 +79,7 @@ FLAG_KEYS: dict[str, str] = {"model": "--model", "sandbox_mode": "--sandbox"}
 
 PROBE_TIMEOUT_S = 30
 
-AuthMode = Literal["api_key"]
+AuthMode = Literal["api_key", "login"]
 
 
 class CodexUnavailableError(RuntimeError):
@@ -98,15 +105,25 @@ def check_flags(codex: str, base_env: dict[str, str]) -> None:
         )
 
 
-def auth_mode(env: dict[str, str]) -> AuthMode:
+NO_AUTH = f"set {API_KEY_ENV} for this shell, or run `codex login`"
+
+
+def auth_mode(env: dict[str, str], home: Path | None = None) -> AuthMode:
+    """api_key when `CODEX_API_KEY` is set, else login when a ChatGPT login is on disk."""
     if env.get(API_KEY_ENV, "").strip():
         return "api_key"
-    raise CodexUnavailableError(f"set {API_KEY_ENV} for this shell")
+    if has_login(login_path(env, home or Path.home())):
+        return "login"
+    raise CodexUnavailableError(NO_AUTH)
 
 
-def has_auth(_codex: str, base_env: dict[str, str]) -> bool:
-    """True when `CODEX_API_KEY` is set (the runtime does not allow login-file auth)."""
-    return bool(base_env.get(API_KEY_ENV, "").strip())
+def has_auth(_codex: str, base_env: dict[str, str], home: Path | None = None) -> bool:
+    """True when `CODEX_API_KEY` is set or a ChatGPT login is on disk. Only presence is checked."""
+    try:
+        auth_mode(base_env, home)
+    except CodexUnavailableError:
+        return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -123,22 +140,34 @@ def build_invocation(
     sandbox: Sandbox,
     base_env: dict[str, str],
     cwd: Path,
+    proxy: LoginProxy | None = None,
 ) -> Invocation:
-    mode = auth_mode(base_env)
+    """The argv and environment for one run; `proxy` is the started login proxy in login mode."""
+    mode: AuthMode = "login" if proxy is not None else auth_mode(base_env)
     argv = [codex, "exec", "--json", "--ignore-user-config", "--ignore-rules", "--ephemeral", "--cd", str(cwd)]
     for key, value in compiled.overrides.items():
         if key in FLAG_KEYS:
             argv += [FLAG_KEYS[key], str(value)]
         else:
             argv += ["--config", f"{key}={toml_value(value)}"]
+    if proxy is not None:
+        argv += ["--config", f"openai_base_url={toml_value(proxy.base_url)}"]
     if compiled.schema_json is not None:
         argv += ["--output-schema", str(compiled.schema_json)]
     argv.append("-")  # the prompt comes in on stdin
+    if proxy is not None:
+        # srt sets NO_PROXY=localhost,127.0.0.1, which would send Codex straight at the sandbox's own
+        # loopback; without it the request goes through srt's proxy, which allows only the login proxy's port.
+        # unverified: that Codex's HTTP client honors HTTP_PROXY and NO_PROXY the way curl does.
+        argv = ["env", "-u", "NO_PROXY", "-u", "no_proxy", *argv]
     # unverified: that Codex's shell_environment_policy default excludes still strip CODEX_API_KEY from
     # command_execution shells while keeping it available to codex exec itself.
     env = _probe_env(base_env)
     if mode == "api_key":
         env[API_KEY_ENV] = base_env[API_KEY_ENV]
+    else:
+        assert proxy is not None, "login mode runs through the login proxy"
+        env[API_KEY_ENV] = proxy.run_key  # opens the proxy for this run only; never the login itself
     # Codex gets an empty home of its own in the run's temp dir, so it never reaches for the denied ~/.codex.
     # unverified: that codex exec starts with an empty CODEX_HOME when CODEX_API_KEY is set, and writes no
     # copy of the key there (reviewer commands can read the run's temp dir).

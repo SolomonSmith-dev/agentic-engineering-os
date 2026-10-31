@@ -125,14 +125,14 @@ The worker reads its prompt on stdin. It does not load the target repository's s
 
 Compiled files live in `.agent-team/compiled/<run-id>/` and reach Claude Code only through flags; nothing is written into the target's `.claude/` at run time. Only `agent-team configure` writes there, after you approve its diff (`src/agent_team/bootstrap/configure.py`). It never writes `.claude/settings.json`, and never writes through a symlink.
 
-The Codex worker (`src/agent_team/adapters/codex/invoke.py`) runs on `CODEX_API_KEY` only: there is no login mode. It gets the same allowlist, `CODEX_API_KEY`, and a `CODEX_HOME` pointing at an empty directory in the run's temp directory; your own `CODEX_HOME` is never passed. It runs with `--ignore-user-config --ignore-rules --ephemeral`, so your `config.toml` and execpolicy rules do not load, and with the user config ignored no project is trusted, so the repository's `.codex/config.toml` and hooks do not load either.
+The Codex worker (`src/agent_team/adapters/codex/invoke.py`) runs on `CODEX_API_KEY`, or, when that is unset, on your ChatGPT `codex login` through a host-side proxy (`src/agent_team/adapters/codex/login_proxy.py`). In login mode Codex gets a random per-run key that opens only that proxy, as `CODEX_API_KEY`, and `openai_base_url=http://127.0.0.1:<port>/backend-api/codex`; the proxy runs in the orchestrator's process outside srt, holds the login in memory, and adds the access token and account id to requests it forwards to `chatgpt.com/backend-api/codex/` (no other path). srt allows only that port, not `chatgpt.com` or `auth.openai.com`, and unsets `NO_PROXY` for Codex so its requests go through srt's filter. The proxy writes refreshed tokens back to your `auth.json` (mode 0600, replaced atomically, only when the file still holds the tokens it read). Either way the worker gets the same allowlist, its key, and a `CODEX_HOME` pointing at an empty directory in the run's temp directory; your own `CODEX_HOME` is never passed. It runs with `--ignore-user-config --ignore-rules --ephemeral`, so your `config.toml` and execpolicy rules do not load, and with the user config ignored no project is trusted, so the repository's `.codex/config.toml` and hooks do not load either.
 
 ## Auth reported as present or absent
 
 agent-team never reads, prints or stores a credential's value.
 
 - `agent-team doctor` reports Claude and GitHub auth as `present` or `absent` (`src/agent_team/doctor.py`). For Claude it reads only the `loggedIn` boolean from `claude auth status --json`; for gh only the exit code of `gh auth status`.
-- The Codex adapter checks only that `CODEX_API_KEY` is set (`has_auth`).
+- The Codex adapter checks only that `CODEX_API_KEY` is set, or that `auth.json` holds a ChatGPT login (`has_auth`). The login's tokens are read by the login proxy alone, never printed, logged or recorded.
 - `gh_authenticated` in `src/agent_team/orchestrator/pr.py` reads only the exit code.
 - Canonical tool files name a credential by handle (`credential: GH_TOKEN`); the schema rejects anything that is not an upper-case variable name (`src/agent_team/schemas/tool.py`).
 - `init` records secret files by path and kind and remote URLs without their userinfo (`src/agent_team/bootstrap/discovery.py`).

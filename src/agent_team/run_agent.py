@@ -33,6 +33,7 @@ from agent_team.adapters.claude.compile import compile_agent
 from agent_team.adapters.claude.invoke import RUNTIME, build_invocation, check_version, execute, record
 from agent_team.adapters.codex.invoke import API_DOMAINS
 from agent_team.adapters.codex.invoke import auth_mode as codex_auth_mode
+from agent_team.adapters.codex.login_proxy import LoginError, LoginProxy, login_path
 from agent_team.canonical import Document, validate_tree
 from agent_team.environments import acquire, create, effective_ceiling, release, srt_path
 from agent_team.environments.sandbox import extend_settings
@@ -319,19 +320,57 @@ def _run_codex(
         test_commands=test_commands,
         codex_home=base_env.get("CODEX_HOME"),
     )
+    mode = codex_auth_mode(base_env)
+    proxy = None
+    if mode == "login":
+        try:
+            proxy = LoginProxy(login_path(base_env, Path.home())).start()
+        except LoginError as exc:
+            raise RunAgentError(str(exc)) from exc
+    try:
+        return _run_codex_session(
+            store, run_id, environment, agent, compiled, proxy,
+            notes=notes, mode=mode, codex=codex, prompt=prompt, max_budget_usd=max_budget_usd,
+            timeout_s=timeout_s, price=price, redaction=redaction, state=state, base_env=base_env, echo=echo,
+        )  # fmt: skip
+    finally:
+        if proxy is not None:
+            proxy.close()
+
+
+def _run_codex_session(
+    store: RunStore,
+    run_id: str,
+    environment: Environment,
+    agent: AgentSpec,
+    compiled: codex_adapter.CompiledCodexAgent,
+    proxy: LoginProxy | None,
+    *,
+    notes: list[str],
+    mode: str,
+    codex: str,
+    prompt: str,
+    max_budget_usd: float,
+    timeout_s: float,
+    price: ModelCost | None,
+    redaction: tuple[str, ...],
+    state: RunState,
+    base_env: dict[str, str],
+    echo: Callable[[str], None],
+) -> AdapterResult:
     extend_settings(
         environment.sandbox,
         deny_read=compiled.deny_read,
-        allowed_domains=API_DOMAINS[codex_auth_mode(base_env)],
+        allowed_domains=API_DOMAINS[mode] if proxy is None else (proxy.allowed_domain,),
     )
-    notes = [*notes, f"runtime codex, sandbox_mode {compiled.permissions.sandbox_mode}"]
+    notes = [*notes, f"runtime codex, sandbox_mode {compiled.permissions.sandbox_mode}, auth {mode}"]
     notes.append("unavailable: " + "; ".join(codex_adapter.UNAVAILABLE))
     if compiled.permissions.dropped:
         notes.append("dropped: " + "; ".join(compiled.permissions.dropped))
     echo(status_line(store.transition(run_id, state, note=" | ".join(notes))))
 
     invocation = codex_adapter.build_invocation(
-        compiled, codex=codex, sandbox=environment.sandbox, base_env=base_env, cwd=environment.path
+        compiled, codex=codex, sandbox=environment.sandbox, base_env=base_env, cwd=environment.path, proxy=proxy
     )
     output_model = next((OUTPUT_SCHEMAS[o] for o in agent.outputs if o in OUTPUT_SCHEMAS), None)
     stderr_path = environment.sandbox.tmp_dir / "codex.stderr"

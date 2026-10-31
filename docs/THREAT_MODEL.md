@@ -10,7 +10,7 @@ Residual risks are stated plainly. Where a control does less than [ARCHITECTURE.
 | --- | --- |
 | A1. Host credentials | `~/.ssh`, `~/.aws`, `~/.config/gcloud`, registry, cluster and cloud logins (`~/.docker`, `~/.kube`, `~/.npmrc` and others), keychains, signing keys |
 | A2. The GitHub credential | `GH_TOKEN` / `GITHUB_TOKEN` in your shell, or `~/.config/gh`, `~/.git-credentials`, `~/.netrc` |
-| A3. Model-runtime credentials | Claude login under `~/.claude`, `ANTHROPIC_API_KEY`; `CODEX_API_KEY` (a Codex login under `~/.codex` is never used, and denied) |
+| A3. Model-runtime credentials | Claude login under `~/.claude`, `ANTHROPIC_API_KEY`; `CODEX_API_KEY`; a Codex login under `~/.codex` (denied in the sandbox, held by the login proxy outside it) |
 | A4. Repository secrets | `.env*`, `*.pem` and similar files in the target repository |
 | A5. The target repository's integrity | its default and protected branches, `.git/config`, `.git/hooks`, files outside the run's worktree |
 | A6. The run record and artifacts | `.agent-team/runs.db`, `.agent-team/artifacts/`, `.agent-team/memory/` |
@@ -77,12 +77,13 @@ Mitigations:
 - **srt denies reads of `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.git-credentials`, `~/.netrc`, `~/.codex` and the home registry, cluster and cloud logins (`HOME_LOGIN_DIRS` minus `~/.gnupg`, `HOME_LOGIN_FILES`) for every sandboxed process** (`DENY_READ_HOME` in `sandbox.py`).
 - **The same paths, `~/.codex` among them, plus `~/.config/gcloud`, `~/.gnupg` and `~/.claude`, are compiled into deny rules and the PreToolUse hook; key files by name (`KEY_FILES`) into deny rules only** (`DEFAULT_PROTECTED`, `PROTECTED_FILES` in `compile.py`, `src/agent_team/adapters/claude/hook.py`).
 - **Sandboxed Claude runs also srt-deny every protected path except `~/.claude`,** including `~/.config/gcloud`, `~/.gnupg` and key files by name (T3).
-- **Codex runs on `CODEX_API_KEY` only, with an empty `CODEX_HOME` of its own; `~/.codex/**` and a caller's `CODEX_HOME` are srt read-denied** (`auth_mode`, `build_invocation` in `src/agent_team/adapters/codex/invoke.py`; `DENY_READ_HOME` in `sandbox.py`; `codex_home_deny_read` in `compile.py`).
+- **A Codex login never enters the sandbox:** without `CODEX_API_KEY`, a host-side proxy holds it and Codex gets a per-run key that opens only that proxy, on the one loopback port srt allows (`src/agent_team/adapters/codex/login_proxy.py`).
+- **Codex runs on a key (`CODEX_API_KEY`, or the login proxy's run key), with an empty `CODEX_HOME` of its own; `~/.codex/**` and a caller's `CODEX_HOME` are srt read-denied** (`auth_mode`, `build_invocation` in `src/agent_team/adapters/codex/invoke.py`; `DENY_READ_HOME` in `sandbox.py`; `codex_home_deny_read` in `compile.py`).
 - **`gh` is denied in every session,** and the orchestrator alone holds the GitHub credential (`pr.py`).
 
 Residual:
 
-- **API keys reach the worker process.** In Claude's API-key mode `ANTHROPIC_API_KEY` is in the worker's environment, readable by any command it runs. Codex always runs on `CODEX_API_KEY`; Codex is meant to strip it from shell commands (below).
+- **API keys reach the worker process.** In Claude's API-key mode `ANTHROPIC_API_KEY` is in the worker's environment, readable by any command it runs. Codex always runs on `CODEX_API_KEY`; Codex is meant to strip it from shell commands (below). In login mode that key is the run's proxy key: a command that got it could send model requests through the proxy for the rest of the run, billed to your ChatGPT plan, but could not read or take the login.
 - **Claude's own login stays readable.** `~/.claude` is not srt read-denied, because Claude Code reads its login there. Only the hook stands between a Bash command and `~/.claude`, and the hook is a tripwire (T3).
 - **For Codex, the key is withheld from shell commands only by Codex's own shell-environment excludes,** which the code marks unverified against a real Codex.
 
