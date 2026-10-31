@@ -37,9 +37,10 @@ HOME_LOGIN_FILES: tuple[str, ...] = (
 # Read-denied for every sandboxed process: credentials that never belong in a run. The GitHub
 # ones are the orchestrator's (it pushes and runs gh outside the sandbox), never a worker's.
 # ~/.gnupg is left readable here so a worker's own commit still works under a global
-# commit.gpgsign; the hook, Codex runs and inspect deny it (DEFAULT_PROTECTED).
+# commit.gpgsign; the hook, Codex runs and inspect deny it (DEFAULT_PROTECTED). No runtime
+# reads ~/.codex: Codex runs on CODEX_API_KEY with an empty CODEX_HOME in the run's temp dir.
 DENY_READ_HOME: tuple[str, ...] = (
-    ".ssh", ".aws", ".config/gh", ".git-credentials", ".netrc",
+    ".ssh", ".aws", ".config/gh", ".git-credentials", ".netrc", ".codex",
     *(d for d in HOME_LOGIN_DIRS if d != ".gnupg"), *HOME_LOGIN_FILES,
 )  # fmt: skip
 

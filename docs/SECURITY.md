@@ -64,7 +64,7 @@ The Codex runtime has no per-command rules. There, the granted capabilities pick
 Every compiled session protects the policy's `protected_paths` plus a fixed list (`DEFAULT_PROTECTED` in `src/agent_team/adapters/claude/compile.py`):
 
 ```text
-.env*   *.pem   ~/.ssh/**   ~/.aws/**   ~/.config/gcloud/**   ~/.claude/**
+.env*   *.pem   ~/.ssh/**   ~/.aws/**   ~/.config/gcloud/**   ~/.claude/**   ~/.codex/**
 ~/.config/gh/**   ~/.git-credentials   ~/.netrc
 ~/.docker/**   ~/.kube/**   ~/.gnupg/**   ~/.azure/**   ~/.config/op/**
 ~/.npmrc   ~/.pypirc   ~/.cargo/credentials   ~/.cargo/credentials.toml   ~/.m2/settings.xml
@@ -94,8 +94,8 @@ When `srt` is installed and the environment's tier is `srt` (`canonical/environm
 
 - **Network**: denied except the environment's `allowed_domains`: `api.anthropic.com`, `github.com`, `*.github.com`, `*.githubusercontent.com`, `pypi.org`, `files.pythonhosted.org`, `registry.npmjs.org` by default. A Codex run adds only `api.openai.com`.
 - **Writes**: only the worktree, the run's temp directory, and the corners of `.git` a commit on the run's branch needs: the object store, the worktree's admin directory, and `refs/heads/agent-team/` with its reflog under `logs/`. `main` and every other ref, `.git/hooks` and `.git/config` stay read-only, so a sandboxed commit cannot plant a hook or config that later runs outside the sandbox. The worktree's `.git` file and its admin directory's `commondir`, `gitdir` and `config.worktree` are write-denied, because they name the repository git opens (`git_pointer_files`).
-- **Reads denied in the base settings** (`DENY_READ_HOME`): `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.git-credentials`, `~/.netrc`, and the home logins above except `~/.gnupg`.
-- **Reads denied once an agent is compiled for the run**: the policy's protected paths, `DEFAULT_PROTECTED` and the key files, matched in the worktree and in the target repository, with `.agent-team/` denied around the run's own worktree, temp directory and compiled files (`srt_deny_read` in `src/agent_team/environments/sandbox.py`). A Claude run gets this list minus `~/.claude/**`, which the worker needs for its own login (`deny_read` in `compile_agent`, applied by `extend_settings` in `run_agent`); that list includes `~/.gnupg`. `inspect`'s command verification and Codex runs also deny `~/.codex/**`, and a Codex run denies a `CODEX_HOME` you set (`protect` in `src/agent_team/memory/verify.py`; `codex_home_deny_read`). In a workflow, DISCOVERY and TEST commands run in the same sandbox after the implementer's compile has added these denies.
+- **Reads denied in the base settings** (`DENY_READ_HOME`): `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.git-credentials`, `~/.netrc`, `~/.codex`, and the home logins above except `~/.gnupg`.
+- **Reads denied once an agent is compiled for the run**: the policy's protected paths, `DEFAULT_PROTECTED` and the key files, matched in the worktree and in the target repository, with `.agent-team/` denied around the run's own worktree, temp directory and compiled files (`srt_deny_read` in `src/agent_team/environments/sandbox.py`). A Claude run gets this list minus `~/.claude/**`, which the worker needs for its own login (`deny_read` in `compile_agent`, applied by `extend_settings` in `run_agent`); that list includes `~/.gnupg`. `DEFAULT_PROTECTED` includes `~/.codex/**`, and every sandboxed run also srt-denies `~/.codex` in its base settings (`DENY_READ_HOME`); a Codex run also denies a `CODEX_HOME` you set (`codex_home_deny_read`). In a workflow, DISCOVERY and TEST commands run in the same sandbox after the implementer's compile has added these denies.
 - **Its own rules are out of reach**: the settings file lives in `.agent-team/sandbox/`, outside the worktree.
 
 Without srt, a run falls back to the worktree alone and its ceiling is capped at A2. That means:
