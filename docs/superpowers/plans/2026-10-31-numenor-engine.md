@@ -1231,7 +1231,7 @@ uv run agent-team eval replay-check --tasks-dir evals/private
 | arda-pr-72 | f6f3294fb3b2a4eabdddb7c7505a9792067dcffa | f0a286293037f8aad50a433706a5ce5aa7236b19 | tests/tombombadil/test_d1_speaker_prefix.py |
 | arda-pr-60 | fa6c97e65f309873ffa1c3c701f701c845152bdd | d1781dc048b05d0f8a7fe2028ee0067dd340bae6 | tests/tombombadil/test_film_knowledge.py |
 
-  cutclone: PR 26 base `d75e44f74d71...`, merge `093414bc8249...`, verifier `tests/unit/auth/rate-limit.test.ts`; PR 14 base `57086f96df38...`, merge `6af79ece4d8f...`, verifier `tests/unit/contracts/hardening.test.ts` (resolve full SHAs from the local clone; none of this goes in a tracked file).
+  private repo: two PRs; their bases, merges and verifiers are in the controller's untracked notes and go only into gitignored `evals/private/` (none of this goes in a tracked file).
   - `render_report(record, cells, probes, *, private: AbstractSet[str] = frozenset())`: adds two lines after the table, `public tasks: <passes>/<cells> verifier passes, $<spent>` and `private repo (<n> tasks): <passes>/<cells> verifier passes, $<spent>` per arm, and never prints a private task's id.
 
 - [ ] **Step 1: Failing tests**: every `evals/tasks/arda-pr-*.yaml` loads, has `kind: replay`, `ref` and `replay.merge` exactly as the table; `git check-ignore evals/private/x.yaml` exits 0; no tracked file outside `docs/superpowers/` names a private task (the test builds its needle as `"cutclone" + "-pr-"` so it does not match itself, and runs `git grep -l <needle> -- ':!docs/superpowers'`, expecting no output); `render_report` with a private task id never contains that id and contains `private repo (1 tasks)`.

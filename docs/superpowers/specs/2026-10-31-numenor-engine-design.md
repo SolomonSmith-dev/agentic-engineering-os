@@ -22,7 +22,7 @@ Goals (each names what it adds):
 | G6 Port agent-factory's agent-definition lint (`agent-team validate --lint`) | Maintenance |
 | G7 Codex reviewer on the ChatGPT login, Claude Opus fallback | Cost: no new bill; resilience |
 | G8 One `trace.jsonl` per run | Observability; Numenor deliverable |
-| G9 Replay eval: five closed PRs from arda and cutclone, replayed from the pre-PR commit | Evidence; Numenor deliverable |
+| G9 Replay eval: five closed PRs (three from arda, two from a private repo), replayed from the pre-PR commit | Evidence; Numenor deliverable |
 | G10 Paid eval run with numbers in the README | Evidence; portfolio |
 | G11 Dogfood: ARDA #70 through a Ledger task file to a draft PR | Step 15; Numenor slice one |
 | G12 Archive agent-crew and agent-factory on GitHub after G3 to G6 pass tests (Solomon approves each) | Maintenance: one repo instead of three |
@@ -132,10 +132,9 @@ Each verified fail-before, pass-after in a scratch clone; none needs keys, Redis
 | 1 | arda | 73 | 47967171b1a7 | 04f09d04bed5 | tests/tombombadil/test_letterboxd_loader.py | 2 fail → 23 pass |
 | 2 | arda | 72 | f6f3294fb3b2 | f0a286293037 | tests/tombombadil/test_d1_speaker_prefix.py | 6 fail → 12 pass |
 | 3 | arda | 60 | fa6c97e65f30 | d1781dc048b0 | tests/tombombadil/test_film_knowledge.py | 5 fail → 7 pass |
-| 4 | cutclone (private) | 26 | d75e44f74d71 | 093414bc8249 | tests/unit/auth/rate-limit.test.ts | 1 fail → 6 pass |
-| 5 | cutclone (private) | 14 | 57086f96df38 | 6af79ece4d8f | tests/unit/contracts/hardening.test.ts | 15 fail → 20 pass |
+| 4-5 | private repo | two PRs | details in gitignored `evals/private/` only | | | |
 
-Alternates: arda 75, 76, 58. Setup: arda `uv sync --extra dev`, `uv run pytest -q <file>`; cutclone Node 24+, `pnpm install --frozen-lockfile` at each base, `pnpm exec vitest run <file>`. No "repair a failing test" PR qualified.
+Alternates: arda 75, 76, 58. Setup: arda `uv sync --extra dev`, `uv run pytest -q <file>`; private repo: Node 24+, pnpm, vitest. No "repair a failing test" PR qualified.
 
 Private data rule (Solomon, 2026-10-31): cutclone is private. Its task files live in gitignored `evals/private/` and read the local clone; the public README reports cutclone results only as totals labelled "private repo", never PR text or code. arda tasks are public in `evals/tasks/`.
 
