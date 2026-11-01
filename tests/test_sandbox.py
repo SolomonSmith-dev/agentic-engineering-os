@@ -193,7 +193,7 @@ def test_every_sandboxed_run_denies_home_logins(tmp_path: Path) -> None:
     home = tmp_path / "home"
     settings = build_settings(spec([]), run_id="r", worktree=tmp_path, git_dir=tmp_path, tmp_dir=tmp_path, home=home)
     denied = set(settings["filesystem"]["denyRead"])  # type: ignore[index]
-    for name in (".docker", ".kube", ".npmrc", ".pypirc", ".azure", ".vault-token", ".cache/huggingface/token"):
+    for name in (".docker", ".kube", ".npmrc", ".pypirc", ".azure", ".vault-token", ".cache/huggingface/token", ".codex"):
         assert str(home / name) in denied, name
     assert str(home / ".gnupg") not in denied, "a worker's own signed commit keeps working"
 

@@ -232,6 +232,17 @@ def test_key_file_patterns_do_not_block_ordinary_commands(command: str, tmp_path
     assert check({"tool_name": "Bash", "tool_input": {"command": "cat ~/.docker/config.json"}}, hook) is not None
 
 
+
+def test_the_codex_login_is_protected_for_claude_workers(tmp_path: Path) -> None:
+    """No runtime needs ~/.codex since Codex runs on CODEX_API_KEY, so a Claude worker cannot read it either."""
+    agent, body = reviewer()
+    compiled = compile_agent(agent, body, skills(agent), policy(), ceiling="A2", model=MODEL,
+                             out_dir=tmp_path / "c", roots=[tmp_path], home=tmp_path)  # fmt: skip
+    hook = json.loads(compiled.policy_json.read_text())
+    assert check({"tool_name": "Bash", "tool_input": {"command": "cat ~/.codex/auth.json"}}, hook) is not None
+    assert check({"tool_name": "Read", "tool_input": {"file_path": str(tmp_path / ".codex" / "auth.json")}}, hook)
+    assert "Read(~/.codex/**)" in json.loads(compiled.settings_json.read_text())["permissions"]["deny"]
+
 def test_worktree_files_are_not_caught_by_the_state_dir_rule(hook_policy: dict) -> None:
     inside = Path(hook_policy["roots"][0]) / "src" / "main.py"
     assert check({"tool_name": "Edit", "tool_input": {"file_path": str(inside)}}, hook_policy) is None

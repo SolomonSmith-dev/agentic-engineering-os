@@ -33,9 +33,8 @@ from agent_team.schemas.skill import SkillSpec
 
 # One srt denyRead entry: a gitignore-shaped glob, or a path srt must take literally.
 
-# Codex login files are always denied to reviewer commands; runtime auth uses CODEX_API_KEY.
-# A `CODEX_HOME` set in the caller's environment is denied as well (see `codex_home_deny_read`).
-CODEX_PROTECTED: tuple[str, ...] = ("~/.codex/**",)
+# `~/.codex/**` is in DEFAULT_PROTECTED; runtime auth uses CODEX_API_KEY. A `CODEX_HOME` set in
+# the caller's environment is denied as well (see `codex_home_deny_read`).
 CODEX_LOGIN_FILE = "auth.json"
 
 
@@ -158,7 +157,7 @@ def compile_agent(
     """Write the compiled files for one agent under `out_dir` and describe them."""
     deny = [*agent.capabilities.deny, *policy.denied_capabilities]
     permissions = resolve(agent.capabilities.allow, deny, ceiling, test_commands=test_commands)
-    protected = list(dict.fromkeys([*policy.protected_paths, *DEFAULT_PROTECTED, *PROTECTED_FILES, *CODEX_PROTECTED]))
+    protected = list(dict.fromkeys([*policy.protected_paths, *DEFAULT_PROTECTED, *PROTECTED_FILES]))
     schema = output_schema(agent)
     prompt = build_prompt(body, agent, skills, permissions, test_commands, schema is not None)
 
