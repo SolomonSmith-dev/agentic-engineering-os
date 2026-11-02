@@ -1,7 +1,7 @@
 """Codex login mode: the host-side proxy that holds a `codex login` so the sandbox never sees it.
 
-A fake ChatGPT backend and token endpoint stand in for chatgpt.com and
-auth.openai.com; no test reaches either. The end-to-end test runs a fake `codex`
+A fake ChatGPT backend stands in for chatgpt.com; no test reaches it. The proxy
+never refreshes or writes the login. The end-to-end test runs a fake `codex`
 under real srt and has it call the proxy the way Codex would in API-key mode
 against `openai_base_url`.
 """
@@ -9,7 +9,6 @@ against `openai_base_url`.
 import base64
 import json
 import os
-import stat
 import sys
 import threading
 import time
@@ -61,8 +60,6 @@ class Backend:
     def __init__(self) -> None:
         self.requests: list[dict] = []
         self.revoked: set[str] = set()
-        self.refreshes: list[dict] = []
-        self.next_access = access("refreshed")
         backend = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -73,12 +70,6 @@ class Backend:
 
             def do_POST(self) -> None:
                 body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
-                if self.path == "/oauth/token":
-                    backend.refreshes.append(json.loads(body))
-                    out = json.dumps({"access_token": backend.next_access, "refresh_token": "rt-ROTATED-2",
-                                      "id_token": jwt(sub="new-id")}).encode()  # fmt: skip
-                    self._answer(200, out, "application/json")
-                    return
                 token = self.headers.get("Authorization", "").removeprefix("Bearer ")
                 backend.requests.append({"path": self.path, "token": token, "body": body,
                                          "account": self.headers.get("chatgpt-account-id"),
@@ -110,9 +101,9 @@ def backend() -> Iterator[Backend]:
 
 @pytest.fixture
 def proxy(tmp_path: Path, backend: Backend) -> Iterator[LoginProxy]:
-    write_login(tmp_path / ".codex" / "auth.json", access_token=access("current"))
-    with login_proxy.running(tmp_path / ".codex" / "auth.json", upstream=backend.url,
-                             refresh_url=f"{backend.url}/oauth/token") as running:  # fmt: skip
+    path = tmp_path / ".codex" / "auth.json"
+    write_login(path, access_token=access("current"))
+    with login_proxy.running(path, upstream=backend.url) as running:
         yield running
 
 
@@ -204,50 +195,34 @@ def test_a_websocket_upgrade_gets_426_so_codex_falls_back_to_http(proxy: LoginPr
     assert status == 426
 
 
-def test_a_401_refreshes_once_and_saves_the_rotated_tokens(proxy: LoginProxy, backend: Backend) -> None:
-    path = proxy.path
+def test_the_proxy_never_refreshes_or_writes_the_login(proxy: LoginProxy, backend: Backend) -> None:
+    before = proxy.path.read_bytes(), proxy.path.stat().st_mtime_ns
     backend.revoked.add(proxy._tokens.access_token)
-    status, _ = call(proxy)
-    assert status == 200
-    assert [r["token"] for r in backend.requests] == [*backend.revoked, backend.next_access]
-    assert backend.refreshes == [{"client_id": login_proxy.CLIENT_ID, "grant_type": "refresh_token",
-                                  "refresh_token": REFRESH}]  # fmt: skip
-    saved = json.loads(path.read_text())
-    assert saved["tokens"]["access_token"] == backend.next_access
-    assert saved["tokens"]["refresh_token"] == "rt-ROTATED-2", "a rotated refresh token is kept, or the login breaks"
-    assert saved["tokens"]["account_id"] == ACCOUNT and saved["OPENAI_API_KEY"] is None
-    assert saved["last_refresh"] != "2026-10-01T00:00:00Z"
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
-    assert [p.name for p in path.parent.iterdir()] == ["auth.json"], "no temp file left behind"
+    status, body = call(proxy)
+    assert status == 401 and b"run `codex login` again" in body
+    assert len(backend.requests) == 1, "no retry with the same token"
+    assert (proxy.path.read_bytes(), proxy.path.stat().st_mtime_ns) == before, "auth.json is never written"
+    assert [p.name for p in proxy.path.parent.iterdir()] == ["auth.json"]
+    assert REFRESH.encode() not in body
 
 
-def test_a_token_near_expiry_is_refreshed_before_it_is_sent(tmp_path: Path, backend: Backend) -> None:
-    path = tmp_path / "auth.json"
-    write_login(path, access_token=access("old", expires_in=60))
-    with login_proxy.running(path, upstream=backend.url, refresh_url=f"{backend.url}/oauth/token") as running:
-        assert call(running)[0] == 200
-    assert [r["token"] for r in backend.requests] == [backend.next_access]
-
-
-def test_a_login_codex_refreshed_meanwhile_is_used_rather_than_refreshed_again(
-    proxy: LoginProxy, backend: Backend
-) -> None:
+def test_a_login_codex_refreshed_meanwhile_is_picked_up_after_a_401(proxy: LoginProxy, backend: Backend) -> None:
     newer = access("from-codex")
-    write_login(proxy.path, access_token=newer, refresh_token="rt-FROM-CODEX")
     backend.revoked.add(proxy._tokens.access_token)
+    write_login(proxy.path, access_token=newer, refresh_token="rt-FROM-CODEX")
     assert call(proxy)[0] == 200
-    assert backend.refreshes == [] and backend.requests[-1]["token"] == newer
+    assert [r["token"] for r in backend.requests][-1] == newer
     assert json.loads(proxy.path.read_text())["tokens"]["refresh_token"] == "rt-FROM-CODEX"
 
 
-def test_a_failed_refresh_says_to_log_in_again_without_the_token(tmp_path: Path, backend: Backend) -> None:
+@pytest.mark.parametrize("expires_in", [0, 60])
+def test_a_login_that_is_expiring_is_refused_before_the_run(tmp_path: Path, expires_in: int) -> None:
     path = tmp_path / "auth.json"
-    write_login(path, access_token=access("old", expires_in=0))
-    with login_proxy.running(path, upstream=backend.url, refresh_url=f"{backend.url}/nowhere") as running:
-        status, body = call(running)
-    assert status == 401 and b"run `codex login` again" in body
-    assert REFRESH.encode() not in body
-    assert json.loads(path.read_text())["tokens"]["refresh_token"] == REFRESH, "the login on disk is untouched"
+    write_login(path, access_token=access("old", expires_in=expires_in))
+    before = path.read_bytes()
+    with pytest.raises(LoginError, match="run `codex login` again"):
+        LoginProxy(path)
+    assert path.read_bytes() == before
 
 
 def test_the_account_id_falls_back_to_the_id_token(tmp_path: Path, backend: Backend) -> None:

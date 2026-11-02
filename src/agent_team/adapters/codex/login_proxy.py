@@ -10,13 +10,14 @@ orchestrator, outside srt, starts this proxy for the length of the run:
 - The proxy checks the key, swaps in the login's access token and `chatgpt-account-id`, and
   forwards the request to `https://chatgpt.com/backend-api/codex`. srt allows only
   `127.0.0.1:<port>`, so neither the login nor chatgpt.com is reachable from the sandbox.
-- When the access token is near expiry, or the backend answers 401, the proxy refreshes it the
-  way Codex does and writes the new tokens back to `auth.json`, but only if the file still holds
-  the tokens it read (refresh tokens rotate, so a refresh that is not saved would log you out).
+- The proxy never refreshes the login or writes it anywhere: refreshing and saving it stays
+  Codex's own job on your machine. A run is refused when the access token is within
+  `EXPIRY_MARGIN_S` of expiry, and a 401 from the backend makes the proxy re-read `auth.json`
+  once (Codex outside the run may have refreshed it) before passing the 401 on.
 
-The login is read only here, held in memory, and never logged, recorded or passed on.
+The login is read only here, held in memory, and never logged, recorded, written or passed on.
 
-Routes, headers, the refresh request and `auth.json`'s shape were read from the openai/codex
+Routes, headers and `auth.json`'s shape were read from the openai/codex
 source (commit 67f0994, 2026-10-31: `login/src/auth/manager.rs`, `login/src/auth/storage.rs`,
 `model-provider-info/src/lib.rs`, `model-provider/src/bearer_auth_provider.rs`, `core/src/client.rs`).
 No real Codex or ChatGPT backend has run this code.
@@ -25,9 +26,7 @@ No real Codex or ChatGPT backend has run this code.
 import base64
 import hmac
 import json
-import os
 import secrets
-import tempfile
 import threading
 import time
 import urllib.error
@@ -35,7 +34,6 @@ import urllib.request
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -44,16 +42,13 @@ from urllib.parse import urlsplit
 LOGIN_FILE = "auth.json"
 
 UPSTREAM = "https://chatgpt.com"
-REFRESH_URL = "https://auth.openai.com/oauth/token"
-# The OAuth client id Codex refreshes with (`CLIENT_ID` in login/src/auth/manager.rs).
-CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 
 # Only the Codex backend is forwarded; any other path on chatgpt.com is refused.
 PATH_PREFIX = "/backend-api/codex/"
 BASE_PATH = PATH_PREFIX.rstrip("/")
 
-# Codex refreshes an access token this close to expiry (CHATGPT_ACCESS_TOKEN_REFRESH_WINDOW_MINUTES).
-REFRESH_WINDOW_S = 5 * 60
+# A run is refused when the access token expires sooner than this; Codex itself refreshes at 5 minutes.
+EXPIRY_MARGIN_S = 10 * 60
 
 UPSTREAM_TIMEOUT_S = 600
 CHUNK = 64 * 1024
@@ -69,7 +64,7 @@ AUTH_CLAIMS = "https://api.openai.com/auth"
 
 
 class LoginError(RuntimeError):
-    """No usable `codex login` was found, or it could not be refreshed. The message says what to do."""
+    """No usable `codex login` was found. The message says what to do."""
 
 
 def login_path(env: dict[str, str], home: Path) -> Path:
@@ -132,13 +127,16 @@ def has_login(path: Path) -> bool:
 class LoginProxy:
     """The proxy for one run. `start` binds 127.0.0.1 on a free port; `close` stops it."""
 
-    def __init__(self, path: Path, *, upstream: str | None = None, refresh_url: str | None = None) -> None:
+    def __init__(self, path: Path, *, upstream: str | None = None) -> None:
         tokens = _tokens(_read(path))
         if tokens is None:
             raise LoginError(f"no ChatGPT login in {path}; run `codex login`, or set CODEX_API_KEY")
+        expires = tokens.expires_at()
+        if expires is not None and expires - time.time() < EXPIRY_MARGIN_S:
+            # agent-team never refreshes or saves the login (no secret is persisted); Codex does both.
+            raise LoginError(f"the Codex login in {path} has expired or expires within minutes; run `codex login` again")
         self.path = path
         self.upstream = (upstream or UPSTREAM).rstrip("/")
-        self.refresh_url = refresh_url or REFRESH_URL
         self.run_key = secrets.token_urlsafe(32)
         self._tokens = tokens
         self._lock = threading.Lock()
@@ -176,69 +174,13 @@ class LoginProxy:
     # --- tokens -----------------------------------------------------------------------
 
     def access(self, *, stale: str | None = None) -> Tokens:
-        """Tokens to send now, refreshed first when near expiry or when `stale` (the token a 401 came back for)."""
+        """Tokens to send now; after a 401 for `stale`, whatever auth.json holds now, if Codex has refreshed it."""
         with self._lock:
-            current = self._tokens
-            expires = current.expires_at()
-            near = expires is not None and expires - time.time() < REFRESH_WINDOW_S
-            if stale is None and not near:
-                return current
-            if stale is not None and stale != current.access_token:
-                return current  # another request already refreshed
-            on_disk = _tokens(_read(self.path))
-            if on_disk is not None and on_disk.refresh_token != current.refresh_token:
-                self._tokens = on_disk  # Codex outside this run refreshed it; use that rather than refresh again
-                return on_disk
-            self._tokens = self._refresh(current)
+            if stale is not None and stale == self._tokens.access_token:
+                on_disk = _tokens(_read(self.path))
+                if on_disk is not None:
+                    self._tokens = on_disk
             return self._tokens
-
-    def _refresh(self, current: Tokens) -> Tokens:
-        # unverified: against auth.openai.com; the request and answer shapes are request_chatgpt_token_refresh's.
-        body = json.dumps(
-            {"client_id": CLIENT_ID, "grant_type": "refresh_token", "refresh_token": current.refresh_token}
-        ).encode()
-        request = urllib.request.Request(
-            self.refresh_url, data=body, method="POST", headers={"Content-Type": "application/json"}
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=60) as response:
-                data = json.loads(response.read())
-        except (urllib.error.URLError, OSError, ValueError) as exc:
-            code = exc.code if isinstance(exc, urllib.error.HTTPError) else None
-            raise LoginError(
-                f"refreshing the Codex login failed{f' (HTTP {code})' if code else ''}; run `codex login` again"
-            ) from None
-        if not isinstance(data, dict) or not isinstance(data.get("access_token"), str):
-            raise LoginError("refreshing the Codex login returned no access token; run `codex login` again")
-        fresh = Tokens(
-            data["access_token"],
-            data["refresh_token"] if isinstance(data.get("refresh_token"), str) else current.refresh_token,
-            current.account_id,
-        )
-        self._persist(current, fresh, data.get("id_token") if isinstance(data.get("id_token"), str) else None)
-        return fresh
-
-    def _persist(self, expected: Tokens, fresh: Tokens, id_token: str | None) -> None:
-        """Write refreshed tokens back to auth.json, only while it still holds the tokens they replace."""
-        data = _read(self.path)
-        stored = _tokens(data)
-        if stored is None or stored.refresh_token != expected.refresh_token:
-            return  # the login changed while the run refreshed; leave the file to whoever changed it
-        assert isinstance(data, dict)
-        data["tokens"]["access_token"] = fresh.access_token
-        data["tokens"]["refresh_token"] = fresh.refresh_token
-        if id_token is not None:
-            data["tokens"]["id_token"] = id_token
-        data["last_refresh"] = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-        fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=".auth.", suffix=".tmp")
-        try:
-            os.fchmod(fd, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as out:
-                json.dump(data, out, indent=2)
-            os.replace(tmp, self.path)
-        except OSError:
-            Path(tmp).unlink(missing_ok=True)
-            raise
 
     def authorized(self, header: str | None) -> bool:
         return header is not None and hmac.compare_digest(header.encode(), f"Bearer {self.run_key}".encode())
@@ -313,10 +255,11 @@ def _handler(proxy: LoginProxy) -> type[BaseHTTPRequestHandler]:
                 response = self._send(tokens, headers, body)
                 if response.status == 401:
                     response.close()
-                    response = self._send(proxy.access(stale=tokens.access_token), headers, body)
-            except LoginError as exc:
-                self._refuse(401, str(exc))
-                return
+                    fresh = proxy.access(stale=tokens.access_token)
+                    if fresh.access_token == tokens.access_token:
+                        self._refuse(401, "the ChatGPT backend refused the Codex login; run `codex login` again")
+                        return
+                    response = self._send(fresh, headers, body)
             except (urllib.error.URLError, OSError):
                 self._refuse(502, "the Codex backend could not be reached")
                 return
