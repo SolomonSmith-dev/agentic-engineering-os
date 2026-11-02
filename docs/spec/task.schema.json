@@ -192,6 +192,15 @@
     "budget": {
       "$ref": "#/$defs/TaskBudget"
     },
+    "depends_on": {
+      "description": "Coordinator scheduling metadata; the engine preserves it but does not resolve dependencies.",
+      "items": {
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+        "type": "string"
+      },
+      "title": "Depends On",
+      "type": "array"
+    },
     "id": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
       "title": "Id",

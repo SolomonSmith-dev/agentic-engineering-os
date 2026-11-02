@@ -62,5 +62,6 @@ class TaskFile(CanonicalModel):
     budget: TaskBudget
     workflow: KebabName
     models: dict[KebabName, KebabName] = Field(default_factory=dict, description="Model class overrides per role.")
+    depends_on: list[TaskId] = Field(default_factory=list, description="Coordinator scheduling metadata; the engine preserves it but does not resolve dependencies.")
     status: str | None = None
     result: TaskResult | None = None

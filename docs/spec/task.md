@@ -23,6 +23,7 @@ This page is the JSON Schema's shape. `agent-team validate` checks the same shap
 | `budget` | [TaskBudget](#taskbudget) | yes |  |  |  |
 | `workflow` | string | yes |  | pattern `^[a-z][a-z0-9]*(-[a-z0-9]+)*$`; min length 1; max length 64 |  |
 | `models` | map of key `^[a-z][a-z0-9]*(-[a-z0-9]+)*$` to string | no |  | key min length 1; key max length 64; each value pattern `^[a-z][a-z0-9]*(-[a-z0-9]+)*$`; each value min length 1; each value max length 64 | Model class overrides per role. |
+| `depends_on` | list of string | no |  | each pattern `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` | Coordinator scheduling metadata; the engine preserves it but does not resolve dependencies. |
 | `status` | string or null | no | `null` |  |  |
 | `result` | [TaskResult](#taskresult) or null | no | `null` |  |  |
 
