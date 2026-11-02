@@ -25,6 +25,7 @@ from agent_team.schemas.runs import (
     ToolResultStatus,
 )
 from agent_team.schemas.skill import SkillSpec
+from agent_team.schemas.task_file import BudgetLimit, TaskBudget, TaskFile, TaskId, TaskOutcome, TaskResult, TaskTarget
 from agent_team.schemas.tool import Implementation, ToolSpec
 from agent_team.schemas.workflow import Node, Transition, WorkflowSpec
 
@@ -36,6 +37,7 @@ SCHEMAS: dict[str, type[BaseModel]] = {
     "policy": PolicySpec,
     "environment": EnvironmentSpec,
     "registry": RegistrySpec,
+    "task": TaskFile,
 }
 
 SCHEMA_ID_BASE = "https://github.com/SolomonSmith-dev/agentic-engineering-os/schemas"
@@ -53,6 +55,7 @@ def json_schema(kind: str) -> dict[str, Any]:
 __all__ = [
     "SCHEMAS",
     "AgentSpec",
+    "BudgetLimit",
     "Capabilities",
     "CellResult",
     "Checkpoint",
@@ -75,6 +78,12 @@ __all__ = [
     "RunState",
     "SkillSpec",
     "StateTransition",
+    "TaskBudget",
+    "TaskFile",
+    "TaskId",
+    "TaskOutcome",
+    "TaskResult",
+    "TaskTarget",
     "ToolCallRecord",
     "ToolResultStatus",
     "ToolSpec",

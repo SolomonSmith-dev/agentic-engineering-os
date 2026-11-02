@@ -15,6 +15,9 @@ from agent_team.adapters.claude.invoke import ClaudeVersionError
 from agent_team.adapters.codex.invoke import API_KEY_ENV, CodexUnavailableError, has_auth
 from agent_team.bootstrap import BootstrapError, apply_plan, plan_configure, render_summary, write_proposal
 from agent_team.canonical import validate_tree
+from agent_team.lint import lint_tree
+from agent_team.tasks.audit import audit_task_file, audit_text, refusals
+from agent_team.tasks.io import TaskFileError, load_task_file
 from agent_team.doctor import _which, build_report, render_table
 from agent_team.environments import AllocatorError, LockHeldError, srt_path, sweep
 from agent_team.focus import analyze as analyze_focus
@@ -95,21 +98,61 @@ def validate(
         None,
         help="Directory holding agents/, skills/, workflows/, tools/ and policies/; routing/ beside it is checked too.",
     ),
+    lint: bool = typer.Option(False, "--lint", help="Also run the agent-definition lint (strict YAML, least privilege)."),
 ) -> None:
     """Validate every file under canonical/ against the canonical schemas."""
     path = path or default_canonical_dir()
     report = validate_tree(path)
-    for problem in report.problems:
+    problems = list(report.problems)
+    if lint:
+        problems.extend(lint_tree(report))
+    for problem in problems:
         typer.echo(problem.render(), err=True)
     kinds = {}
     for doc in report.documents:
         kinds[doc.kind] = kinds.get(doc.kind, 0) + 1
     summary = ", ".join(f"{n} {k}{'s' if n != 1 else ''}" for k, n in sorted(kinds.items())) or "0 files"
-    if report.ok:
-        typer.echo(f"ok: {summary} valid under {path}")
+    if not problems:
+        typer.echo(f"ok: {summary} valid under {path}{', lint clean' if lint else ''}")
         return
-    typer.echo(f"failed: {len(report.problems)} problem(s) in {summary} under {path}", err=True)
+    typer.echo(f"failed: {len(problems)} problem(s) in {summary} under {path}", err=True)
     raise typer.Exit(code=1)
+
+
+task_app = typer.Typer(help="Task files: validate before a run claims them.", no_args_is_help=True)
+app.add_typer(task_app, name="task")
+
+
+def _task_problems(path: Path) -> list[str]:
+    """Schema problems, then refusing crew-audit findings, for one task file."""
+    try:
+        loaded = load_task_file(path)
+    except TaskFileError as exc:
+        problems = list(exc.problems)
+        try:  # still audit the raw text so an injection is reported alongside a schema error
+            text = path.read_bytes().decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            return problems
+        return problems + [f.render() for f in refusals(audit_text(text))]
+    return [f.render() for f in refusals(audit_task_file(loaded))]
+
+
+@task_app.command("validate")
+def task_validate(
+    paths: list[Path] = typer.Argument(..., help="Task files to check."),
+) -> None:
+    """Check task files against the schema and the crew-audit rules. Exit 1 when any is invalid."""
+    failed = False
+    for path in paths:
+        problems = _task_problems(path)
+        if not problems:
+            typer.echo(f"ok {path.name}")
+            continue
+        failed = True
+        for problem in problems:
+            typer.echo(f"FAIL {path.name}: {problem}")
+    if failed:
+        raise typer.Exit(code=1)
 
 
 @app.command()

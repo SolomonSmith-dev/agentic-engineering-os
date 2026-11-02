@@ -34,6 +34,8 @@ def file_location(kind: str) -> str:
             return f"canonical/{subdir}/{pattern}"
     if kind == "registry":
         return REGISTRY.as_posix()
+    if kind == "task":
+        return "a Ledger task file, passed with run --task-file"
     return "not read from a file"
 
 

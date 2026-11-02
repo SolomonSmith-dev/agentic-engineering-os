@@ -1,0 +1,294 @@
+{
+  "$defs": {
+    "TaskBudget": {
+      "additionalProperties": false,
+      "properties": {
+        "minutes": {
+          "description": "Wall-clock minutes.",
+          "exclusiveMinimum": 0,
+          "title": "Minutes",
+          "type": "number"
+        },
+        "tokens": {
+          "description": "Input plus output tokens; cache reads and writes are priced, not counted.",
+          "exclusiveMinimum": 0,
+          "title": "Tokens",
+          "type": "integer"
+        },
+        "usd": {
+          "description": "List-price dollars.",
+          "exclusiveMinimum": 0,
+          "title": "Usd",
+          "type": "number"
+        }
+      },
+      "required": [
+        "tokens",
+        "minutes",
+        "usd"
+      ],
+      "title": "TaskBudget",
+      "type": "object"
+    },
+    "TaskResult": {
+      "additionalProperties": false,
+      "properties": {
+        "finished_at": {
+          "format": "date-time",
+          "title": "Finished At",
+          "type": "string"
+        },
+        "halted": {
+          "anyOf": [
+            {
+              "enum": [
+                "tokens",
+                "minutes",
+                "usd"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Which limit stopped the run; set only for halted_budget.",
+          "title": "Halted"
+        },
+        "minutes": {
+          "default": 0.0,
+          "minimum": 0,
+          "title": "Minutes",
+          "type": "number"
+        },
+        "outcome": {
+          "enum": [
+            "pr_opened",
+            "failed",
+            "blocked",
+            "escalated",
+            "halted_budget",
+            "refused",
+            "busy"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "pr": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pr"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run Id"
+        },
+        "tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Tokens",
+          "type": "integer"
+        },
+        "trace": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Trace"
+        },
+        "usd_list": {
+          "default": 0.0,
+          "minimum": 0,
+          "title": "Usd List",
+          "type": "number"
+        }
+      },
+      "required": [
+        "outcome",
+        "finished_at"
+      ],
+      "title": "TaskResult",
+      "type": "object"
+    },
+    "TaskTarget": {
+      "additionalProperties": false,
+      "properties": {
+        "base": {
+          "description": "Branch the draft PR is based on.",
+          "minLength": 1,
+          "title": "Base",
+          "type": "string"
+        },
+        "remote": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Git remote to push to; the repo's default when omitted.",
+          "title": "Remote"
+        },
+        "repo": {
+          "description": "Path to the target repository.",
+          "minLength": 1,
+          "title": "Repo",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repo",
+        "base"
+      ],
+      "title": "TaskTarget",
+      "type": "object"
+    }
+  },
+  "$id": "https://github.com/SolomonSmith-dev/agentic-engineering-os/schemas/task.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "allow_dependency_changes": {
+      "default": false,
+      "title": "Allow Dependency Changes",
+      "type": "boolean"
+    },
+    "budget": {
+      "$ref": "#/$defs/TaskBudget"
+    },
+    "id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+      "title": "Id",
+      "type": "string"
+    },
+    "issue": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Issue"
+    },
+    "kind": {
+      "const": "task",
+      "title": "Kind",
+      "type": "string"
+    },
+    "models": {
+      "description": "Model class overrides per role.",
+      "patternProperties": {
+        "^[a-z][a-z0-9]*(-[a-z0-9]+)*$": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$",
+          "type": "string"
+        }
+      },
+      "propertyNames": {
+        "maxLength": 64,
+        "minLength": 1
+      },
+      "title": "Models",
+      "type": "object"
+    },
+    "paths": {
+      "description": "Write scope: repo-relative paths the run may change.",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Paths",
+      "type": "array"
+    },
+    "request": {
+      "minLength": 1,
+      "title": "Request",
+      "type": "string"
+    },
+    "result": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TaskResult"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "status": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Status"
+    },
+    "target": {
+      "$ref": "#/$defs/TaskTarget"
+    },
+    "workflow": {
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$",
+      "title": "Workflow",
+      "type": "string"
+    }
+  },
+  "required": [
+    "kind",
+    "id",
+    "target",
+    "request",
+    "paths",
+    "budget",
+    "workflow"
+  ],
+  "title": "TaskFile",
+  "type": "object"
+}

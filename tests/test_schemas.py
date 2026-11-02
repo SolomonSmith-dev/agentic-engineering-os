@@ -39,7 +39,8 @@ def _edit(path: Path, old: str, new: str) -> None:
 def test_repo_canonical_tree_validates() -> None:
     report = validate_tree(CANONICAL)
     assert report.ok, [p.render(CANONICAL) for p in report.problems]
-    assert {d.kind for d in report.documents} == set(SCHEMAS)
+    # `task` files are passed with run --task-file, not read from canonical/.
+    assert {d.kind for d in report.documents} == set(SCHEMAS) - {"task"}
 
 
 def test_validate_command_passes_on_repo_tree() -> None:
