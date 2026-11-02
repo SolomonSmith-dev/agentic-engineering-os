@@ -7,12 +7,13 @@ missing srt into a failure so CI can never pass by skipping the sandbox.
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from agent_team.environments import UNSANDBOXED_CEILING, create, effective_ceiling, srt_path
-from agent_team.environments.sandbox import DENY_READ_HOME, build_settings
+from agent_team.environments.sandbox import DENY_READ_HOME, build_settings, extend_settings, srt_deny_read
 from agent_team.schemas import EnvironmentSpec
 
 ALLOWED = "github.com"
@@ -195,3 +196,35 @@ def test_every_sandboxed_run_denies_home_logins(tmp_path: Path) -> None:
     for name in (".docker", ".kube", ".npmrc", ".pypirc", ".azure", ".vault-token", ".cache/huggingface/token", ".codex"):
         assert str(home / name) in denied, name
     assert str(home / ".gnupg") not in denied, "a worker's own signed commit keeps working"
+
+
+def test_tracked_env_templates_are_readable_but_a_real_env_is_not(repo: Path, tmp_path: Path) -> None:
+    from agent_team.environments.sandbox import env_template_files
+
+    (repo / ".env.example").write_text("API_KEY=replace-me\n", encoding="utf-8")
+    (repo / "cfg").mkdir()
+    (repo / "cfg" / ".env.sample").write_text("X=1\n", encoding="utf-8")
+    (repo / ".env").write_text("API_KEY=real\n", encoding="utf-8")  # untracked: never committed
+    (repo / ".env.local").write_text("X=1\n", encoding="utf-8")
+    git(repo, "add", "-f", ".env.example", "cfg/.env.sample", ".env.local")  # a global gitignore may hide .env*
+    git(repo, "commit", "-q", "-m", "templates")
+    assert env_template_files(repo) == [repo / ".env.example", repo / "cfg" / ".env.sample"]
+    settings = build_settings(spec([]), run_id="r", worktree=repo, git_dir=repo / ".git", tmp_dir=tmp_path, home=tmp_path)
+    assert settings["filesystem"]["allowRead"] == [str(repo / ".env.example"), str(repo / "cfg" / ".env.sample")]
+
+
+@pytest.mark.srt
+def test_srt_lets_a_test_runner_stat_env_example_and_still_hides_env(repo: Path, home: Path, srt: str) -> None:
+    """pytest stats every rootdir entry while collecting; a denied stat on .env.example killed every run on ARDA."""
+    (repo / ".env.example").write_text("API_KEY=replace-me\n", encoding="utf-8")
+    git(repo, "add", "-f", ".env.example")
+    git(repo, "commit", "-q", "-m", "template")
+    env = create(repo, "run-1", spec([]), home=home)
+    # The policy's `.env*` protection arrives through the adapter, after prepare(): same order as a run.
+    extend_settings(env.sandbox, deny_read=srt_deny_read([".env*"], [env.path, repo], home, [env.path]))
+    probe = "import os,sys; os.stat(sys.argv[1]); print('stat-ok')"
+    ok = run_in(env, [sys.executable, "-c", probe, str(env.path / ".env.example")])
+    assert "stat-ok" in ok.stdout, ok.stdout + ok.stderr
+    (env.path / ".env").write_text("API_KEY=SANDBOX-READ-CANARY\n", encoding="utf-8")
+    denied = run_in(env, ["cat", str(env.path / ".env")])
+    assert "SANDBOX-READ-CANARY" not in denied.stdout
