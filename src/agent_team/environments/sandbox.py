@@ -11,6 +11,7 @@ outside the sandbox.
 
 import json
 import shutil
+import subprocess
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -133,6 +134,26 @@ def git_pointer_files(git_dir: Path, worktree: Path) -> list[Path]:
     return [admin / name for name in ("commondir", "gitdir", "config.worktree") if (admin / name).exists()]
 
 
+# Tracked `.env` templates hold placeholders, not secrets (what `agent-team init` reports as
+# env-template). They stay readable inside the sandbox: pytest 9 stats every entry of the
+# rootdir while collecting, and srt's `.env*` deny made that stat fail on ARDA's `.env.example`,
+# so no test could even be collected. A real `.env` is untracked, so it is never in a worktree.
+ENV_TEMPLATE_SUFFIXES: tuple[str, ...] = (".example", ".sample", ".template", ".dist")
+
+
+def env_template_files(worktree: Path) -> list[Path]:
+    """Tracked `.env*` files under `worktree` whose name ends in a template suffix."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(worktree), "ls-files", "-z", "--", ".env*", "**/.env*"],
+            capture_output=True, text=True, check=True, timeout=30,
+        ).stdout  # fmt: skip
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return []
+    names = [n for n in out.split("\0") if n]
+    return sorted(worktree / n for n in names if Path(n).name.startswith(".env") and n.endswith(ENV_TEMPLATE_SUFFIXES))
+
+
 def build_settings(
     spec: EnvironmentSpec, *, run_id: str, worktree: Path, git_dir: Path, tmp_dir: Path, home: Path
 ) -> dict[str, object]:
@@ -145,6 +166,7 @@ def build_settings(
         },
         "filesystem": {
             "denyRead": [*(str(home / name) for name in DENY_READ_HOME), *extra],
+            "allowRead": [str(p) for p in env_template_files(worktree)],
             "allowWrite": [str(worktree), str(tmp_dir), *(str(p) for p in git_write_paths(git_dir, run_id))],
             # The worktree's .git file and its admin dir's commondir and gitdir name the repository git
             # opens; rewritten, the orchestrator's own git (outside srt) would read a config the agent wrote.
