@@ -429,7 +429,8 @@ def _run_codex(
             timeout_s=timeout_s,
             output_model=output_model,
             price=price,
-            max_budget_usd=max_budget_usd,
+            # The meter prices cached input separately; the adapter legacy estimate does not.
+            max_budget_usd=max_budget_usd if watch is None else None,
             redaction=redaction,
             watch=watch,
         )

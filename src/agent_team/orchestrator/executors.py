@@ -294,7 +294,7 @@ class DefaultExecutor:
                 base_commit = given.inputs["diff"].get("head")
             prompt = agent_prompt(given, root)
         except (RunAgentError, AllocatorError, WorkspaceError, OSError) as exc:
-            return NodeResult(blocked=f"agent {name}: {exc}")
+            return self._halted() or NodeResult(blocked=f"agent {name}: {exc}")
 
         state_dir = root / STATE_DIR
         tokens_before = self.meter.tokens if self.meter is not None else 0
@@ -321,7 +321,7 @@ class DefaultExecutor:
                 trace=self._trace(given.run_id),
             )
         except (RunAgentError, ClaudeVersionError, AllocatorError, LockHeldError) as exc:
-            return NodeResult(blocked=f"agent {name}: {exc}")
+            return self._halted() or NodeResult(blocked=f"agent {name}: {exc}")
         finally:
             acquire(state_dir, given.run_id)
         if self.observe is not None:
