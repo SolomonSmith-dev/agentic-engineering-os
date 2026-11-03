@@ -178,25 +178,29 @@ def splice_result(text: str, result: TaskResult) -> str:
     block = render_result(result, newline)
     span = find_result_block(text)
     if span is not None:
-        return text[: span[0]] + block + text[span[1] :]
-    parsed = yaml.safe_load(text)
-    if not isinstance(parsed, dict) or "result" in parsed:
-        raise TaskFileError(["yaml: cannot safely locate the result entry"])
-    # Keep an explicit end marker (and any trailing comments) after the new entry.
-    insertion = len(text)
-    try:
-        for event in yaml.parse(text, Loader=yaml.SafeLoader):
-            if isinstance(event, yaml.DocumentEndEvent) and event.explicit:
-                insertion = event.start_mark.index
-                break
-    except yaml.YAMLError as exc:
-        raise TaskFileError(["yaml: cannot safely append a result"]) from exc
-    prefix, suffix = text[:insertion], text[insertion:]
-    if prefix and not prefix.endswith("\n"):
-        prefix += newline
-    candidate = prefix + block + suffix
+        candidate = text[: span[0]] + block + text[span[1] :]
+    else:
+        parsed = yaml.safe_load(text)
+        if not isinstance(parsed, dict) or "result" in parsed:
+            raise TaskFileError(["yaml: cannot safely locate the result entry"])
+        # Keep an explicit end marker (and any trailing comments) after the new entry.
+        insertion = len(text)
+        try:
+            for event in yaml.parse(text, Loader=yaml.SafeLoader):
+                if isinstance(event, yaml.DocumentEndEvent) and event.explicit:
+                    insertion = event.start_mark.index
+                    break
+        except yaml.YAMLError as exc:
+            raise TaskFileError(["yaml: cannot safely append a result"]) from exc
+        prefix, suffix = text[:insertion], text[insertion:]
+        if prefix and not prefix.endswith("\n"):
+            prefix += newline
+        candidate = prefix + block + suffix
     # Unsupported mapping shapes must never silently overwrite request metadata.
-    before, after = yaml.safe_load(text), yaml.safe_load(candidate)
+    try:
+        before, after = yaml.safe_load(text), yaml.safe_load(candidate)
+    except yaml.YAMLError as exc:
+        raise TaskFileError(["yaml: result splice invalidated task metadata"]) from exc
     if not isinstance(before, dict) or not isinstance(after, dict):
         raise TaskFileError(["yaml: result requires a top-level mapping"])
     if {k: v for k, v in before.items() if k != "result"} != {k: v for k, v in after.items() if k != "result"}:

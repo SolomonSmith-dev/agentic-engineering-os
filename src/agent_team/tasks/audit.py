@@ -920,6 +920,35 @@ def _symlink_alias_findings(root: Path, head: str, changed: set[str]) -> list[Au
         if blob.returncode != 0:
             return [_unverifiable(path, "cannot read symlink target at head")]
         links[path] = blob.stdout.decode("utf-8", errors="surrogateescape")
+    targets = {link: _real(link, links) for link in links}
+
+    def aliases(paths: set[str]) -> set[str] | None:
+        # Walk backwards from real content through file AND directory links. A file
+        # alias may acquire its watched name only through a later directory alias.
+        seen = set(paths)
+        pending = [(path, 0) for path in paths]
+        steps = 0
+        while pending:
+            path, depth = pending.pop()
+            for link, target in targets.items():
+                steps += 1
+                if steps > 100_000:
+                    return None
+                if target is None:
+                    continue
+                if target == "" or path == target or path.startswith(target + "/"):
+                    alias = f"{link}/{path}" if target == "" else link + path[len(target):]
+                    if alias not in seen and _real(alias, links) == _real(path, links):
+                        if depth >= 40:
+                            return None
+                        seen.add(alias)
+                        pending.append((alias, depth + 1))
+        return seen
+
+    changed_aliases = aliases(changed)
+    tree_aliases = aliases(set(tree)) if changed & links.keys() else set()
+    if changed_aliases is None or tree_aliases is None:
+        return [_unverifiable("symlinks", "symlink alias traversal limit exceeded")]
     found: list[AuditFinding] = []
     for link in links:
         target = _real(link, links)
@@ -927,7 +956,7 @@ def _symlink_alias_findings(root: Path, head: str, changed: set[str]) -> list[Au
             if link in changed or _may_hold_dependency_file(link):
                 found.append(AuditFinding("dep-source", "high", link, None, f"symlink {link} leaves the tree or loops"))
             continue
-        reach = tree if link in changed else changed
+        reach = sorted(tree_aliases if link in changed else changed_aliases)
         for p in reach:
             if target == "" or p == target or p.startswith(target + "/"):
                 alias = f"{link}/{p}" if target == "" else link + p[len(target) :]
