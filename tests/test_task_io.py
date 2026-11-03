@@ -127,3 +127,36 @@ def test_write_sidecar_for_unparseable_file(tmp_path):
     written = write_sidecar(p, p.stem, RESULT)
     assert written == tmp_path / "T-0003.result.yaml"
     assert written.read_text().startswith("kind: task-result\nid: T-0003\nresult:\n")
+
+
+def test_column_zero_comment_between_result_fields_does_not_truncate_block(tmp_path):
+    text = (
+        "kind: task\n"
+        "id: T-0001\n"
+        "target: {repo: /tmp/r, base: main}\n"
+        "request: 'quoted: yes'\n"
+        "paths: [src/]\n"
+        "budget:\n  tokens: 2000000\n  minutes: 45\n  usd: 5.00\n"
+        "workflow: bug-fix\n"
+        "status: claimed\n"
+        "result:\n"
+        "  run_id: old-run\n"
+        "# Column-zero comment between fields\n"
+        "  outcome: failed\n"
+        "  finished_at: 2026-11-01T00:00:00Z\n"
+    )
+    p = tmp_path / "T-0001.yaml"
+    p.write_text(text)
+    span = find_result_block(text)
+    assert span is not None
+    assert "outcome: failed" in text[span[0] : span[1]]
+    assert "finished_at: 2026-11-01" in text[span[0] : span[1]]
+    loaded = load_task_file(p)
+    write_result(loaded, RESULT)
+    written = p.read_text()
+    assert written.count("outcome:") == 1
+    assert "outcome: failed" not in written
+    reloaded = load_task_file(p)
+    assert reloaded.task.result is not None
+    assert reloaded.task.result.outcome == RESULT.outcome
+

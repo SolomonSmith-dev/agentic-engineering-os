@@ -726,11 +726,26 @@ def _requirements_hits(root: Path, base: str, head: str, path: str) -> list[str]
     return [h.strip() for h in dict.fromkeys(hits)]
 
 
+_GEMFILE_SOURCE = re.compile(
+    r"(?:\b(?:git|github|path):|:(?:git|github|path)\b|\bsource\b|[a-z][a-z0-9+.-]*://)",
+    re.I,
+)
+
+
+def _gemfile_hits(root: Path, base: str, head: str, path: str) -> list[str]:
+    if _blob(root, head, path) is None:
+        return []  # deleted: nothing left to install from
+    added, _ = _diff_lines(root, base, head, path)
+    hits = [line for _, line in added if _GEMFILE_SOURCE.search(line)]
+    return [h.strip() for h in dict.fromkeys(hits)]
+
+
 _MANIFESTS: dict[str, HitFn] = {
     "pyproject.toml": _pyproject_hits,
     "package.json": _package_json_hits,
     "cargo.toml": _cargo_hits,
     "go.mod": _go_mod_hits,
+    "gemfile": _gemfile_hits,
 }
 
 

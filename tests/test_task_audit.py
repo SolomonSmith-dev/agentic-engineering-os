@@ -417,6 +417,27 @@ def test_cargo_sources(git_repo: Path):
         git(git_repo, "reset", "-q", "--hard", "HEAD~1")
 
 
+GEMFILE = 'source "https://rubygems.org"\n\ngem "rails", "~> 7.1"\n'
+
+
+def test_gemfile_sources(git_repo: Path):
+    dep_repo(git_repo, {"Gemfile": GEMFILE})
+    assert change(git_repo, {"Gemfile": GEMFILE.replace("~> 7.1", "~> 7.2")}) == []
+    git(git_repo, "reset", "-q", "--hard", "HEAD~1")
+    for add in (
+        '\ngem "foo", git: "https://x/foo"\n',
+        '\ngem "foo", github: "x/foo"\n',
+        '\ngem "foo", path: "../foo"\n',
+        '\nsource "https://evil.org"\n',
+    ):
+        found = change(git_repo, {"Gemfile": GEMFILE + add})
+        assert rules(found) == ["dep-source"], add
+        git(git_repo, "reset", "-q", "--hard", "HEAD~1")
+    found = change(git_repo, {"Gemfile": GEMFILE.replace("rubygems.org", "evilgems.org")})
+    assert rules(found) == ["dep-source"]
+
+
+
 def test_go_mod_replace_directives(git_repo: Path):
     base = "module x\n\ngo 1.22\n\nrequire a v1.0.0\n"
     dep_repo(git_repo, {"go.mod": base})
@@ -446,7 +467,7 @@ def test_cargo_non_string_leaves_do_not_crash(git_repo: Path):
 
 
 def test_deleting_manifests_does_not_crash_or_flag(git_repo: Path):
-    files = {"Cargo.toml": CARGO, "pyproject.toml": PYPROJECT, "package.json": MIN_PKG}
+    files = {"Cargo.toml": CARGO, "pyproject.toml": PYPROJECT, "package.json": MIN_PKG, "Gemfile": GEMFILE}
     dep_repo(git_repo, files)
     base = git(git_repo, "rev-parse", "HEAD")
     for n in files:

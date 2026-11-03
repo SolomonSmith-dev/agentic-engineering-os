@@ -60,18 +60,23 @@ def load_task_file(path: Path) -> LoadedTaskFile:
 
 def find_result_block(text: str) -> tuple[int, int] | None:
     start = end = None
+    last_field_end = None
     offset = 0
     for line in text.splitlines(keepends=True):
         if start is None:
             if RESULT_KEY.match(line):
                 start = offset
-        elif line[:1] not in (" ", "\t", "\r", "\n"):  # any column-0 line ends it: key, comment, ---, ...
+                last_field_end = offset + len(line)
+        elif line[:1] not in (" ", "\t", "\r", "\n", "#"):  # any column-0 line other than # ends it: key, ---, ...
             end = offset
             break
+        else:
+            if line[:1] in (" ", "\t") and line.strip() and not line.strip().startswith("#"):
+                last_field_end = offset + len(line)
         offset += len(line)
     if start is None:
         return None
-    end = offset if end is None else end
+    end = last_field_end if last_field_end is not None else (offset if end is None else end)
     while end > start and text[:end].endswith(("\n\n", "\r\n\r\n")):  # trailing blank lines stay outside
         end -= 2 if text[:end].endswith("\r\n\r\n") else 1
     return start, end
