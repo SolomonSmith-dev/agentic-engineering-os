@@ -43,7 +43,7 @@ from agent_team.adapters.codex.compile import CompiledCodexAgent, toml_value
 from agent_team.environments.sandbox import Sandbox
 from agent_team.runs.redact import redact_text
 from agent_team.runs.store import RunStore
-from agent_team.schemas.adapter import AdapterResult, AdapterStatus
+from agent_team.schemas.adapter import AdapterResult, AdapterStatus, Watch
 from agent_team.schemas.registry import ModelCost
 
 RUNTIME = "codex"
@@ -209,18 +209,19 @@ class StreamParser:
     errors: list[str] = field(default_factory=list)
     unparsed: int = 0
 
-    def feed(self, line: str, now: float, wall: datetime) -> None:
+    def feed(self, line: str, now: float, wall: datetime) -> dict[str, Any] | None:
+        """Parse one line; returns the event (for the budget watch), or None when it is not one."""
         line = line.strip()
         if not line:
-            return
+            return None
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
             self.unparsed += 1
-            return
+            return None
         if not isinstance(event, dict):
             self.unparsed += 1
-            return
+            return None
         kind = event.get("type")
         if kind == "thread.started":
             self.thread_id = event.get("thread_id") if isinstance(event.get("thread_id"), str) else None
@@ -241,6 +242,7 @@ class StreamParser:
             self.errors.append(str(event.get("message", "error")))
         elif kind in ("item.started", "item.updated", "item.completed"):
             self._item(kind, event.get("item"), now, wall)
+        return event
 
     def _item(self, kind: str, item: Any, now: float, wall: datetime) -> None:
         if not isinstance(item, dict) or not isinstance(item.get("id"), str):
@@ -359,6 +361,7 @@ def execute(
     price: ModelCost | None = None,
     max_budget_usd: float | None = None,
     redaction: tuple[str, ...] = (),
+    watch: Watch | None = None,
 ) -> tuple[AdapterResult, StreamParser]:
     """Run the worker to completion, prompt on stdin, and parse its event stream."""
     parser = StreamParser()
@@ -375,13 +378,17 @@ def execute(
             start_new_session=True,  # its own process group, so a timeout reaches every child
         )
         timed_out = threading.Event()
+        halted: str | None = None
 
-        def _kill() -> None:
-            timed_out.set()
+        def _killpg() -> None:
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+
+        def _kill() -> None:
+            timed_out.set()
+            _killpg()
 
         timer = threading.Timer(timeout_s, _kill)
         timer.start()
@@ -393,7 +400,12 @@ def execute(
             except BrokenPipeError:
                 pass  # the worker exited before reading; its stderr says why
             for line in proc.stdout:
-                parser.feed(line, time.monotonic(), datetime.now(UTC))
+                event = parser.feed(line, time.monotonic(), datetime.now(UTC))
+                if watch is not None and event is not None and halted is None:
+                    halted = watch(event)
+                    if halted is not None:
+                        _killpg()  # the budget is spent: stop the worker and everything it started
+                        break
             exit_code = proc.wait()
         finally:
             timer.cancel()
@@ -408,4 +420,6 @@ def execute(
         max_budget_usd=max_budget_usd,
         redaction=redaction,
     )
+    if halted is not None:
+        result = result.model_copy(update={"status": "budget_exceeded", "reason": halted})
     return result, parser

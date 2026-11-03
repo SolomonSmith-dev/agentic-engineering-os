@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, get_args
 
 from agent_team.runs.redact import redact_text, redact_value, summarize_args
+from agent_team.schemas.task_file import BudgetLimit
 from agent_team.schemas.runs import (
     Checkpoint,
     RunOutcome,
@@ -79,6 +80,11 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
     # 2 (step 10): the orchestrator's checkpoint, written with the transition into
     # the state it lets a run re-enter. Redacted JSON; NULL on every older row.
     ("ALTER TABLE transitions ADD COLUMN checkpoint TEXT",),
+    # 3 (engine M3): metered tokens (input + output) and which budget limit halted the run.
+    (
+        "ALTER TABLE runs ADD COLUMN tokens_total INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE runs ADD COLUMN halted TEXT",
+    ),
 )
 
 SCHEMA_VERSION = len(MIGRATIONS)
@@ -365,29 +371,38 @@ class RunStore:
                 (worktree_path, _ts(self._clock()), run_id),
             )
 
-    def add_cost(self, run_id: str, cost_usd: float) -> None:
-        """Add model cost that no single tool call carries (the adapter's normalized total)."""
+    def add_cost(self, run_id: str, cost_usd: float, *, tokens: int = 0) -> None:
+        """Add model cost (and metered tokens) that no single tool call carries."""
         if cost_usd < 0:
             raise ValueError("cost_usd must be >= 0")
+        if tokens < 0:
+            raise ValueError("tokens must be >= 0")
         with self._tx() as conn:
             self._run_row(run_id)
             conn.execute(
-                "UPDATE runs SET cost_usd = cost_usd + ?, last_event_at = ? WHERE run_id = ?",
-                (cost_usd, _ts(self._clock()), run_id),
+                "UPDATE runs SET cost_usd = cost_usd + ?, tokens_total = tokens_total + ?, last_event_at = ? WHERE run_id = ?",
+                (cost_usd, tokens, _ts(self._clock()), run_id),
             )
 
-    def finish_run(self, run_id: str, outcome: RunOutcome) -> RunRecord:
-        """Stamp the end time and outcome. The run's rows are kept whatever the outcome."""
+    def finish_run(self, run_id: str, outcome: RunOutcome, *, halted: BudgetLimit | None = None) -> RunRecord:
+        """Stamp the end time and outcome. The run's rows are kept whatever the outcome.
+
+        `halted` names the budget limit, and is given exactly when the outcome is halted_budget.
+        """
         if outcome not in get_args(RunOutcome):
             raise ValueError(f"unknown outcome {outcome!r}")
+        if (outcome == "halted_budget") != (halted is not None):
+            raise ValueError("halted is set exactly when the outcome is halted_budget")
+        if halted is not None and halted not in get_args(BudgetLimit):
+            raise ValueError(f"unknown budget limit {halted!r}")
         now = self._clock()
         with self._tx() as conn:
             run = self._run_row(run_id)
             if run["ended_at"] is not None:
                 raise RunStoreError(f"run {run_id} already ended ({run['outcome']})")
             conn.execute(
-                "UPDATE runs SET ended_at = ?, last_event_at = ?, outcome = ? WHERE run_id = ?",
-                (_ts(now), _ts(now), outcome, run_id),
+                "UPDATE runs SET ended_at = ?, last_event_at = ?, outcome = ?, halted = ? WHERE run_id = ?",
+                (_ts(now), _ts(now), outcome, halted, run_id),
             )
         return self.get_run(run_id)
 
@@ -412,6 +427,8 @@ class RunStore:
             last_event_at=_dt(row["last_event_at"]),
             outcome=row["outcome"],
             cost_usd=row["cost_usd"],
+            tokens_total=row["tokens_total"],
+            halted=row["halted"],
         )
 
     def get_run(self, run_id: str) -> RunRecord:

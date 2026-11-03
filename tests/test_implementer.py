@@ -102,7 +102,7 @@ for event in [{{"type": "system", "subtype": "init"}},
 '''
 
 FAKE_GH = r'''#!{python}
-"""Fake gh: records every call; `auth status` and `pr create` answer by the mode file."""
+"""Fake gh: records every call; `auth status` and `pr create` answer by the mode file; `pr list` finds no PR."""
 import json, os, sys
 
 mode = json.load(open({mode!r}))["mode"]
@@ -120,6 +120,9 @@ if args[:2] == ["pr", "create"]:
         print("GraphQL: could not create the pull request ghp_GHSTDERRCANARY0000000000", file=sys.stderr)
         sys.exit(1)
     print({url!r})
+    sys.exit(0)
+if args[:2] == ["pr", "list"]:
+    print("[]")  # no PR on the run branch yet
     sys.exit(0)
 sys.exit(2)
 '''

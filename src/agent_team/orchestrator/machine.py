@@ -16,7 +16,10 @@ running, with the evidence every earlier node left. Gate outcomes:
     no gate passes, evidence missing,
     or the node reports a blocker          BLOCKED, run ends blocked
     the executor raises                    BLOCKED, run ends failed, error re-raised
+    the node reports a budget halt         BLOCKED, run ends halted_budget (worktree kept)
     KeyboardInterrupt                      nothing recorded; the run stays resumable
+
+With a `trace`, every transition is also a `transition` line in trace.jsonl.
 
 Every transition prints exactly one status line.
 """
@@ -28,7 +31,8 @@ from typing import Any, Protocol
 from agent_team.orchestrator.dag import Dag, DagNode, Edge, OrchestratorError
 from agent_team.runs.render import status_line
 from agent_team.runs.store import RunStore
-from agent_team.schemas.runs import RunOutcome, RunRecord
+from agent_team.schemas.runs import RunOutcome, RunRecord, StateTransition
+from agent_team.schemas.task_file import BudgetLimit
 
 Echo = Callable[[str], None]
 
@@ -59,6 +63,8 @@ class NodeResult:
     note: str | None = None
     blocked: str | None = None
     escalate: bool = False
+    tokens: int = 0  # metered input + output tokens (task-file runs)
+    halted: BudgetLimit | None = None  # the budget limit that stopped the node; ends the run halted_budget
 
 
 class Executor(Protocol):
@@ -76,6 +82,8 @@ class Context:
     attempts: dict[str, int] = field(default_factory=dict)
     traversals: dict[str, int] = field(default_factory=dict)
     escalated: bool = False
+    # Run metadata a resume needs and no node produces: a task-file run's file, budget and base.
+    meta: dict[str, Any] = field(default_factory=dict)
 
     def dump(self) -> dict[str, Any]:
         return {
@@ -84,6 +92,7 @@ class Context:
             "attempts": self.attempts,
             "traversals": self.traversals,
             "escalated": self.escalated,
+            "meta": self.meta,
         }
 
     @classmethod
@@ -95,6 +104,7 @@ class Context:
                 attempts={str(k): int(v) for k, v in data.get("attempts", {}).items()},
                 traversals={str(k): int(v) for k, v in data.get("traversals", {}).items()},
                 escalated=bool(data.get("escalated", False)),
+                meta=dict(data.get("meta") or {}),
             )
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             raise OrchestratorError(f"checkpoint is unreadable ({type(exc).__name__}: {exc})") from exc
@@ -108,9 +118,25 @@ def _join(*parts: str | None) -> str | None:
     return " | ".join(kept) or None
 
 
-def _block(store: RunStore, run_id: str, note: str | None, echo: Echo, *, outcome: RunOutcome = "blocked") -> RunRecord:
-    echo(status_line(store.transition(run_id, "BLOCKED", note=note)))
-    return store.finish_run(run_id, outcome)
+def _emit(trace: Any | None, t: StateTransition) -> None:
+    if trace is not None:
+        trace.emit("transition", seq=t.seq, from_state=t.from_state, to_state=t.to_state, note=t.note, cost_usd=t.cost_usd)
+
+
+def _block(
+    store: RunStore,
+    run_id: str,
+    note: str | None,
+    echo: Echo,
+    *,
+    outcome: RunOutcome = "blocked",
+    halted: BudgetLimit | None = None,
+    trace: Any | None = None,
+) -> RunRecord:
+    t = store.transition(run_id, "BLOCKED", note=note)
+    _emit(trace, t)
+    echo(status_line(t))
+    return store.finish_run(run_id, outcome, halted=halted)
 
 
 def choose_edge(node: DagNode, ctx: Context) -> tuple[Edge | None, str]:
@@ -131,17 +157,27 @@ def choose_edge(node: DagNode, ctx: Context) -> tuple[Edge | None, str]:
     return None, f"gate failed: {seen}"
 
 
-def start(store: RunStore, dag: Dag, task: str, *, echo: Echo = print) -> RunRecord:
+def start(
+    store: RunStore,
+    dag: Dag,
+    task: str,
+    *,
+    echo: Echo = print,
+    meta: Mapping[str, Any] | None = None,
+    run_id: str | None = None,
+) -> RunRecord:
     """Record a new workflow run in its first state, with the first checkpoint."""
-    ctx = Context(task=task)
+    ctx = Context(task=task, meta=dict(meta or {}))
     ctx.enter(dag.start.state)
-    run = store.start_run(dag.workflow, initial_state=dag.start.state, checkpoint=ctx.dump())
+    run = store.start_run(dag.workflow, initial_state=dag.start.state, checkpoint=ctx.dump(), run_id=run_id)
     echo(f"run {run.run_id}  workflow {dag.workflow}")
     echo(status_line(store.transitions(run.run_id)[-1]))
     return run
 
 
-def reenter(store: RunStore, dag: Dag, run_id: str, *, echo: Echo = print, note: str | None = None) -> RunRecord:
+def reenter(
+    store: RunStore, dag: Dag, run_id: str, *, echo: Echo = print, note: str | None = None, trace: Any | None = None
+) -> RunRecord:
     """Move an interrupted run back into its last checkpointed state, through RESUME."""
     run = store.get_run(run_id)
     if run.ended_at is not None:
@@ -155,8 +191,11 @@ def reenter(store: RunStore, dag: Dag, run_id: str, *, echo: Echo = print, note:
         raise OrchestratorError(f"run {run_id} stopped in {checkpoint.state}, which workflow {dag.workflow} no longer has")
     Context.load(checkpoint.data)  # refuse an unreadable checkpoint before recording anything
     echo(f"run {run_id}  workflow {dag.workflow}  resuming at {checkpoint.state}")
-    echo(status_line(store.transition(run_id, "RESUME", note=_join(f"interrupted in {run.state}", note))))
+    t = store.transition(run_id, "RESUME", note=_join(f"interrupted in {run.state}", note))
+    _emit(trace, t)
+    echo(status_line(t))
     t = store.transition(run_id, checkpoint.state, note="re-entered from checkpoint", checkpoint=checkpoint.data)
+    _emit(trace, t)
     echo(status_line(t))
     return store.get_run(run_id)
 
@@ -169,6 +208,7 @@ def walk(
     *,
     echo: Echo = print,
     first_note: str | None = None,
+    trace: Any | None = None,
 ) -> RunRecord:
     """Run nodes from the run's current state until it ends. The run must sit on a checkpoint."""
     checkpoint = store.last_checkpoint(run_id)
@@ -195,15 +235,18 @@ def walk(
             raise
         except Exception as exc:
             error = f"{state} {node.worker}: {type(exc).__name__}: {exc}"
-            _block(store, run_id, _join(pending, error), echo, outcome="failed")
+            _block(store, run_id, _join(pending, error), echo, outcome="failed", trace=trace)
             raise
-        if result.cost_usd:
-            store.add_cost(run_id, result.cost_usd)
+        if result.cost_usd or result.tokens:
+            store.add_cost(run_id, result.cost_usd, tokens=result.tokens)
+        if result.halted is not None:
+            why = _join(pending, result.note, result.blocked or f"budget halt: {result.halted}")
+            return _block(store, run_id, why, echo, outcome="halted_budget", halted=result.halted, trace=trace)
         if result.blocked:
-            return _block(store, run_id, _join(pending, result.note, f"blocked: {result.blocked}"), echo)
+            return _block(store, run_id, _join(pending, result.note, f"blocked: {result.blocked}"), echo, trace=trace)
         missing = [key for key in node.evidence if result.evidence.get(key) is None]
         if missing:
-            return _block(store, run_id, _join(pending, result.note, f"{state} left no evidence {missing}"), echo)
+            return _block(store, run_id, _join(pending, result.note, f"{state} left no evidence {missing}"), echo, trace=trace)
         ctx.evidence.update(result.evidence)
         if result.escalate:
             ctx.escalated = True
@@ -211,13 +254,14 @@ def walk(
             return store.finish_run(run_id, "blocked" if ctx.escalated else "succeeded")
         edge, why = choose_edge(node, ctx)
         if edge is None:
-            return _block(store, run_id, _join(pending, result.note, why), echo)
+            return _block(store, run_id, _join(pending, result.note, why), echo, trace=trace)
         if edge.kind == "retry":
             ctx.traversals[edge.key] = ctx.traversals.get(edge.key, 0) + 1
         if edge.kind == "escalate":
             ctx.escalated = True
         ctx.enter(edge.to_state)
         t = store.transition(run_id, edge.to_state, note=_join(pending, result.note, why), checkpoint=ctx.dump())
+        _emit(trace, t)
         echo(status_line(t))
         pending = None
         state = edge.to_state

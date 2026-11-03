@@ -25,6 +25,8 @@ This page is the JSON Schema's shape. `agent-team validate` checks the same shap
 | --- | --- | --- | --- | --- | --- |
 | `input_per_mtok_usd` | number | yes |  | minimum 0 |  |
 | `output_per_mtok_usd` | number | yes |  | minimum 0 |  |
+| `cache_read_per_mtok_usd` | number or null | no | `null` | minimum 0 | List price of cache reads; a task-file run refuses a model without it. |
+| `cache_write_per_mtok_usd` | number or null | no | `null` | minimum 0 | List price of cache writes; a task-file run refuses a model without it. |
 
 ## ModelEntry
 

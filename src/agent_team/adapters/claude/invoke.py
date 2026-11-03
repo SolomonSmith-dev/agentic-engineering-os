@@ -32,7 +32,7 @@ from agent_team.adapters.claude.compile import PERMISSION_MODE, STRUCTURED_OUTPU
 from agent_team.environments.sandbox import Sandbox
 from agent_team.runs.redact import redact_text
 from agent_team.runs.store import RunStore
-from agent_team.schemas.adapter import AdapterResult, AdapterStatus
+from agent_team.schemas.adapter import AdapterResult, AdapterStatus, Watch
 
 RUNTIME = "claude"
 
@@ -141,28 +141,29 @@ class StreamParser:
     result: dict[str, Any] | None = None
     unparsed: int = 0
 
-    def feed(self, line: str, now: float, wall: datetime) -> None:
+    def feed(self, line: str, now: float, wall: datetime) -> dict[str, Any] | None:
+        """Parse one line; returns the event (for the budget watch), or None when it is not one."""
         line = line.strip()
         if not line:
-            return
+            return None
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
             self.unparsed += 1
-            return
+            return None
         # The stream carries event shapes this parser does not know (system notices whose
         # `message` is a string, for one); anything that is not the shape below is skipped.
         if not isinstance(event, dict):
             self.unparsed += 1
-            return
+            return None
         kind = event.get("type")
         if kind == "result":
             self.result = event
-            return
+            return event
         message = event.get("message")
         content = message.get("content") if isinstance(message, dict) else None
         if not isinstance(content, list):
-            return
+            return event
         for block in content:
             if not isinstance(block, dict):
                 continue
@@ -178,6 +179,7 @@ class StreamParser:
                 if call is not None:
                     call.ended = now
                     call.is_error = bool(block.get("is_error"))
+        return event
 
 
 def _status(result: dict[str, Any] | None, exit_code: int, timed_out: bool) -> AdapterStatus:
@@ -276,6 +278,7 @@ def execute(
     timeout_s: float,
     output_model: type[BaseModel] | None = None,
     redaction: tuple[str, ...] = (),
+    watch: Watch | None = None,
 ) -> tuple[AdapterResult, StreamParser]:
     """Run the worker to completion, prompt on stdin, and parse its stream."""
     parser = StreamParser()
@@ -292,13 +295,17 @@ def execute(
             start_new_session=True,  # its own process group, so a timeout reaches every child
         )
         timed_out = threading.Event()
+        halted: str | None = None
 
-        def _kill() -> None:
-            timed_out.set()
+        def _killpg() -> None:
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+
+        def _kill() -> None:
+            timed_out.set()
+            _killpg()
 
         timer = threading.Timer(timeout_s, _kill)
         timer.start()
@@ -310,7 +317,12 @@ def execute(
             except BrokenPipeError:
                 pass  # the worker exited before reading; its stderr says why
             for line in proc.stdout:
-                parser.feed(line, time.monotonic(), datetime.now(UTC))
+                event = parser.feed(line, time.monotonic(), datetime.now(UTC))
+                if watch is not None and event is not None and halted is None:
+                    halted = watch(event)
+                    if halted is not None:
+                        _killpg()  # the budget is spent: stop the worker and everything it started
+                        break
             exit_code = proc.wait()
         finally:
             timer.cancel()
@@ -323,4 +335,6 @@ def execute(
         output_model=output_model,
         redaction=redaction,
     )
+    if halted is not None:
+        result = result.model_copy(update={"status": "budget_exceeded", "reason": halted})
     return result, parser

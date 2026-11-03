@@ -8,11 +8,17 @@ whose environment is scrubbed and whose sandbox cannot read `~/.config/gh`.
     push   <reviewed commit>:refs/heads/agent-team/<run-id> to origin; never --force, never another branch
     open   gh pr create --draft --head agent-team/<run-id> --title ... --body-file <artifact>
 
+Restart safety: the executor writes a PR ledger artifact before the push and
+again once gh returns the URL. A resumed PR step that finds an opened ledger
+reuses it; one that finds an unfinished attempt asks gh for a PR on the run
+branch (`find_existing`) before creating, and opens nothing when gh cannot say.
+
 The body carries the evidence summary, the verdict, the unresolved risks and
 the minor findings as follow-ups. An escalated run's draft is titled
 `[blocked]` and lists every finding.
 """
 
+import json
 import os
 import subprocess
 from collections.abc import Mapping, Sequence
@@ -176,3 +182,20 @@ def create(gh_argv: Sequence[str], root: Path, branch: str, pr_title: str, body_
         raise _fail("gh pr create", proc, redaction)
     lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
     return lines[-1] if lines else "(gh printed no URL)"
+
+
+def find_existing(gh: str, root: Path, branch: str, redaction: Sequence[str] = ()) -> dict[str, Any] | None:
+    """The PR whose head is the run branch, in any state, or None. Raises PrError when gh cannot answer."""
+    proc = subprocess.run(
+        [gh, "pr", "list", "--head", branch, "--state", "all", "--json", "url,number,isDraft,headRefOid,state", "--limit", "5"],
+        cwd=root, env=gh_env(), capture_output=True, text=True, timeout=GH_TIMEOUT_S, check=False,
+    )  # fmt: skip
+    if proc.returncode != 0:
+        raise _fail("gh pr list", proc, redaction)
+    try:
+        found = json.loads(proc.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        raise PrError("gh pr list printed something other than JSON") from exc
+    if not isinstance(found, list) or not all(isinstance(p, dict) for p in found):
+        raise PrError("gh pr list printed an unexpected shape")
+    return found[0] if found else None

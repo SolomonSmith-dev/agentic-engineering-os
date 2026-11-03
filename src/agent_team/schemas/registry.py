@@ -27,6 +27,12 @@ PrivacyClass = Literal["vendor-cloud", "vendor-zdr", "local-only"]
 class ModelCost(CanonicalModel):
     input_per_mtok_usd: float = Field(ge=0)
     output_per_mtok_usd: float = Field(ge=0)
+    cache_read_per_mtok_usd: float | None = Field(
+        default=None, ge=0, description="List price of cache reads; a task-file run refuses a model without it."
+    )
+    cache_write_per_mtok_usd: float | None = Field(
+        default=None, ge=0, description="List price of cache writes; a task-file run refuses a model without it."
+    )
 
 
 class ModelEntry(CanonicalModel):

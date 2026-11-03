@@ -519,8 +519,8 @@ def test_a_worktree_on_another_branch_is_not_the_run_branch() -> None:
     assert ensure_run_branch(SimpleNamespace(meta=SimpleNamespace(branch="agent-team/r1")), "r1") == "agent-team/r1"  # type: ignore[arg-type]
 
 
-def test_pr_uses_ensure_run_branch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    ex = executor(tmp_path)
+def test_pr_uses_ensure_run_branch(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ex = executor(repo)  # the PR step reads its restart ledger under the repository root first
     monkeypatch.setattr(ex, "_workflow_env", lambda *_: SimpleNamespace(meta=SimpleNamespace(branch="main")))
     result = ex._pr(at_pr("abc"))
     assert result.escalate and result.evidence["pr"]["status"] == "not_opened"

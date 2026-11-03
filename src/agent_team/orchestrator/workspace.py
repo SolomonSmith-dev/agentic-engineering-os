@@ -138,12 +138,12 @@ def redact_lines(text: str, patterns: Iterable[str] = ()) -> str:
 
 
 def workflow_environment(
-    root: Path, run_id: str, spec: EnvironmentSpec, *, requested_autonomy: Autonomy
+    root: Path, run_id: str, spec: EnvironmentSpec, *, requested_autonomy: Autonomy, base: str | None = None
 ) -> tuple[Environment, bool]:
-    """The workflow run's worktree: attached when it exists, created at HEAD otherwise. True when created."""
+    """The workflow run's worktree: attached when it exists, created at `base` (HEAD) otherwise. True when created."""
     if read_meta(root, run_id) is not None:
         return attach(root, run_id, spec, requested_autonomy=requested_autonomy), False
-    return create(root, run_id, spec, requested_autonomy=requested_autonomy), True
+    return create(root, run_id, spec, requested_autonomy=requested_autonomy, base=base), True
 
 
 @dataclass(frozen=True)

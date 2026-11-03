@@ -7,9 +7,14 @@ adapter passes that model's JSON Schema to the runtime. Registered so far: the
 reviewer's verdict (step 6) and the archaeologist's repository memory (step 9).
 """
 
+from collections.abc import Callable, Mapping
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+# Called by an adapter with every parsed stream event; a returned string is a halt reason,
+# and the adapter kills the worker's process group and reports budget_exceeded with it.
+Watch = Callable[[Mapping[str, Any]], str | None]
 
 AdapterStatus = Literal["succeeded", "failed", "budget_exceeded", "max_turns", "timeout", "error"]
 
