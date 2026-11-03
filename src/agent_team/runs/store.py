@@ -96,6 +96,11 @@ class UnknownRunError(KeyError):
 Clock = Callable[[], datetime]
 
 
+def new_run_id(now: datetime) -> str:
+    """`%Y%m%d-%H%M%S-<6 hex>`, the id a run record is started with."""
+    return f"{now.astimezone(UTC):%Y%m%d-%H%M%S}-{secrets.token_hex(3)}"
+
+
 def _utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -252,7 +257,7 @@ class RunStore:
         `checkpoint` is what a resume needs to re-enter `initial_state`; it is stored redacted.
         """
         now = self._clock()
-        run_id = run_id or f"{now.astimezone(UTC):%Y%m%d-%H%M%S}-{secrets.token_hex(3)}"
+        run_id = run_id or new_run_id(now)
         record = RunRecord(
             run_id=run_id,
             workflow=workflow,

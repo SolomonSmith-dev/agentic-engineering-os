@@ -131,11 +131,22 @@ def choose_edge(node: DagNode, ctx: Context) -> tuple[Edge | None, str]:
     return None, f"gate failed: {seen}"
 
 
-def start(store: RunStore, dag: Dag, task: str, *, echo: Echo = print) -> RunRecord:
-    """Record a new workflow run in its first state, with the first checkpoint."""
-    ctx = Context(task=task)
+def start(
+    store: RunStore,
+    dag: Dag,
+    task: str,
+    *,
+    run_id: str | None = None,
+    seed: Mapping[str, Any] | None = None,
+    echo: Echo = print,
+) -> RunRecord:
+    """Record a new workflow run in its first state, with the first checkpoint.
+
+    `run_id` is the id the caller already locked under; `seed` is the first checkpoint's evidence.
+    """
+    ctx = Context(task=task, evidence=dict(seed or {}))
     ctx.enter(dag.start.state)
-    run = store.start_run(dag.workflow, initial_state=dag.start.state, checkpoint=ctx.dump())
+    run = store.start_run(dag.workflow, run_id=run_id, initial_state=dag.start.state, checkpoint=ctx.dump())
     echo(f"run {run.run_id}  workflow {dag.workflow}")
     echo(status_line(store.transitions(run.run_id)[-1]))
     return run

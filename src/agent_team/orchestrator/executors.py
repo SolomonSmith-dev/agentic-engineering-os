@@ -2,8 +2,7 @@
 
 An agent node is one `run_agent` call: it records its own child run (workflow
 `agent:<name>`), and its cost is added to the workflow run. `run_agent` takes
-the repository lock itself, so the workflow hands the lock over for the call
-and takes it back afterwards. Where the agent works follows its `workspace`:
+no lock of its own (`lock=False`): the workflow holds the repository lock for the whole run. Where the agent works follows its `workspace`:
 
     worktree           the workflow run's own worktree (workspace.py): every implementer attempt commits there
     read_only_mirror   a fresh child worktree cut at the diff's head: the reviewer reads exactly what it reviews
@@ -34,7 +33,7 @@ from pydantic import ValidationError
 from agent_team.adapters.claude.capabilities import matches
 from agent_team.adapters.claude.invoke import ClaudeVersionError
 from agent_team.bootstrap.configure import CONFIG_NAME
-from agent_team.environments import AllocatorError, Environment, LockHeldError, acquire, release
+from agent_team.environments import AllocatorError, Environment, LockHeldError
 from agent_team.orchestrator import pr as pr_mod
 from agent_team.orchestrator.dag import Dag, DagNode, OrchestratorError, build_dag
 from agent_team.orchestrator.machine import Echo, NodeInput, NodeResult
@@ -261,8 +260,6 @@ class DefaultExecutor:
         except (RunAgentError, AllocatorError, WorkspaceError, OSError) as exc:
             return NodeResult(blocked=f"agent {name}: {exc}")
 
-        state_dir = root / STATE_DIR
-        release(state_dir, given.run_id)
         try:
             child, result = run_agent(
                 self.repo,
@@ -279,12 +276,11 @@ class DefaultExecutor:
                 environment=environment,
                 base_commit=base_commit,
                 state=given.state,  # type: ignore[arg-type]
+                lock=False,  # the workflow holds this repository's lock for the whole run
                 echo=lambda line: self.echo(f"    {line}"),
             )
         except (RunAgentError, ClaudeVersionError, AllocatorError, LockHeldError) as exc:
             return NodeResult(blocked=f"agent {name}: {exc}")
-        finally:
-            acquire(state_dir, given.run_id)
         if self.observe is not None:
             self.observe(name, result)
         note = f"agent {name} run {child.run_id}: {result.status}"

@@ -26,7 +26,7 @@ from typer.testing import CliRunner
 from agent_team import cli
 from agent_team.canonical import validate_tree
 from agent_team.cli import app
-from agent_team.environments import acquire, read_lock
+from agent_team.environments import acquire, live_run_ids
 from agent_team.orchestrator import (
     STEPS,
     DagError,
@@ -111,7 +111,7 @@ def happy() -> Script:
     return {
         "DISCOVERY": [ok(reproduction_command="uv run pytest tests/test_bug.py", reproduction_fails=True, reproduction_check={})],
         "IMPLEMENTATION": [ok(diff="--- a/app.py\n+++ b/app.py\n", claimed_changes=[])],
-        "TEST": [ok(test_output="1 passed", tests_pass=True)],
+        "TEST": [ok(test_output="1 passed", tests_pass=True, scope_check="ok")],
         "CODE_REVIEW": [ok(reviewer_verdict="approve", findings=[], review={})],
         "PR": [ok(pr="draft")],
     }
@@ -297,7 +297,7 @@ def test_escalate_verdict_skips_the_retry(store: RunStore, dag) -> None:
 
 def test_failed_gate_routes_to_blocked(store: RunStore, dag) -> None:
     script = happy()
-    script["TEST"] = [ok(test_output="1 failed", tests_pass=False)]
+    script["TEST"] = [ok(test_output="1 failed", tests_pass=False, scope_check="ok")]
     record, fake, _ = run_fake(store, dag, script)
     assert path(store, record.run_id)[-2:] == ["TEST", "BLOCKED"]
     assert record.outcome == "blocked" and record.ended_at is not None
@@ -368,7 +368,7 @@ def test_resume_after_an_interrupt_reenters_the_checkpoint(repo: Path) -> None:
     with pytest.raises(KeyboardInterrupt):
         run_workflow(repo, CANONICAL, "bug-fix", "Fix it.", executor_factory=factory_for(first), echo=lines.append)
     assert lines[-1].startswith("interrupted in IMPLEMENTATION; the checkpoint is kept")
-    assert read_lock(repo / ".agent-team") is None, "the lock is released on interrupt"
+    assert live_run_ids(repo / ".agent-team") == set(), "the lock is released on interrupt"
     with RunStore.open(repo, create=False) as store:
         [run] = store.list_runs()
         assert run.ended_at is None and run.state == "IMPLEMENTATION"
@@ -397,7 +397,7 @@ def _dead_pid() -> int:
 
 def test_resume_takes_over_a_killed_runs_lock_and_logs_it(repo: Path) -> None:
     script = happy()
-    script["TEST"] = [KeyboardInterrupt(), ok(test_output="ok", tests_pass=True)]
+    script["TEST"] = [KeyboardInterrupt(), ok(test_output="ok", tests_pass=True, scope_check="ok")]
     with pytest.raises(KeyboardInterrupt):
         run_workflow(repo, CANONICAL, "bug-fix", "Fix it.", executor_factory=factory_for(FakeExecutor(script)), echo=lambda _: None)
     with RunStore.open(repo, create=False) as store:
@@ -508,7 +508,7 @@ def test_reviewer_node_runs_through_run_agent(repo: Path, tmp_path: Path, monkey
     assert "## diff" in seen["stdin"] and "## test_output" in seen["stdin"] and "## plan" in seen["stdin"]
     assert "reproduction_fails" not in seen["stdin"], "only the reviewer node's inputs"
     assert any(line.startswith("    run ") for line in lines), "the child run's lines are nested"
-    assert read_lock(repo / ".agent-team") is None
+    assert live_run_ids(repo / ".agent-team") == set()
 
 
 def test_missing_agent_at_run_time_blocks(repo: Path, dag) -> None:
@@ -574,7 +574,7 @@ def test_cli_workflow_run_interrupt_and_resume(repo: Path, claude_on_path, monke
 
 def test_cli_blocked_workflow_exits_1(repo: Path, claude_on_path, monkeypatch: pytest.MonkeyPatch) -> None:
     script = happy()
-    script["TEST"] = [ok(test_output="1 failed", tests_pass=False)]
+    script["TEST"] = [ok(test_output="1 failed", tests_pass=False, scope_check="ok")]
     monkeypatch.setattr(cli, "default_executor_factory", lambda **_: factory_for(FakeExecutor(script)))
     result = runner.invoke(app, ["run", "--workflow", "bug-fix", "--repo", str(repo), "--canonical", str(CANONICAL), "Fix it."])
     assert result.exit_code == 1

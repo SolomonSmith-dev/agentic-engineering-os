@@ -22,8 +22,8 @@ from agent_team.environments import (
     create,
     dispose,
     list_worktrees,
-    live_run_id,
-    read_lock,
+    live_run_ids,
+    read_table,
     release,
     sweep,
 )
@@ -259,23 +259,23 @@ def test_dispose_unknown_run_fails(repo: Path) -> None:
 
 
 def test_lock_is_exclusive_while_holder_lives(repo: Path) -> None:
-    assert acquire(state(repo), "run-1") is None
+    assert acquire(state(repo), "run-1") == []
     with pytest.raises(LockHeldError, match="run-1"):
         acquire(state(repo), "run-2")
-    assert live_run_id(state(repo)) == "run-1"
+    assert live_run_ids(state(repo)) == {"run-1"}
     assert release(state(repo), "run-2") is False, "only the holder releases"
     assert release(state(repo), "run-1") is True
-    assert read_lock(state(repo)) is None
+    assert read_table(state(repo)) == []
 
 
 def test_dead_pid_lock_is_taken_over_and_reported(repo: Path) -> None:
     dead = subprocess.Popen(["true"])
     dead.wait()
     acquire(state(repo), "run-old", pid=dead.pid)
-    assert live_run_id(state(repo)) is None
-    replaced = acquire(state(repo), "run-new")
-    assert replaced is not None and replaced.run_id == "run-old" and replaced.pid == dead.pid
-    assert live_run_id(state(repo)) == "run-new"
+    assert live_run_ids(state(repo)) == set()
+    [replaced] = acquire(state(repo), "run-new")
+    assert replaced.run_id == "run-old" and replaced.pid == dead.pid
+    assert live_run_ids(state(repo)) == {"run-new"}
 
 
 def _race_for_lock(state_dir: str, run_id: str, holder_pid: int, start, results) -> None:  # noqa: ANN001
@@ -304,7 +304,7 @@ def test_stale_lock_takeover_has_one_winner(repo: Path) -> None:
         proc.join(timeout=30)
     winners = [w for w in (results.get(timeout=5) for _ in racers) if w is not None]
     assert len(winners) == 1
-    assert live_run_id(state(repo)) == winners[0]
+    assert live_run_ids(state(repo)) == {winners[0]}
 
 
 def test_lock_from_another_host_is_never_taken_over(repo: Path) -> None:
@@ -312,15 +312,15 @@ def test_lock_from_another_host_is_never_taken_over(repo: Path) -> None:
     (state(repo) / "lock").write_text(
         json.dumps({"run_id": "remote", "pid": 1, "host": "some-other-host", "acquired_at": ""}), encoding="utf-8"
     )
-    with pytest.raises(LockHeldError, match="some-other-host"):
+    with pytest.raises(LockHeldError, match="run remote holds"):
         acquire(state(repo), "run-1")
 
 
 def test_unreadable_lock_is_treated_as_stale(repo: Path) -> None:
     state(repo).mkdir()
     (state(repo) / "lock").write_text("not json", encoding="utf-8")
-    replaced = acquire(state(repo), "run-1")
-    assert replaced is not None and replaced.run_id == "<unreadable>"
+    [replaced] = acquire(state(repo), "run-1")
+    assert replaced.run_id == "<unreadable>"
 
 
 # --- sweep --------------------------------------------------------------------

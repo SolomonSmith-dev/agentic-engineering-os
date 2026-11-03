@@ -25,7 +25,7 @@ from typing import Literal
 
 from agent_team.environments import ports
 from agent_team.environments.include import copy_includes
-from agent_team.environments.lock import live_run_id
+from agent_team.environments.locks import live_run_ids
 from agent_team.environments.sandbox import Sandbox, effective_ceiling, prepare, settings_path
 from agent_team.runs.store import STATE_DIR, RunStore, UnknownRunError, check_state_dir_ignored, repo_root
 from agent_team.schemas.common import Autonomy
@@ -380,13 +380,13 @@ def sweep(repo: Path) -> list[SweepResult]:
         for child in dirs["worktrees"].iterdir():
             if child.is_dir() and RUN_ID_RE.match(child.name):
                 known.setdefault(child.name, None)
-    live = live_run_id(dirs["state"])
+    live = live_run_ids(dirs["state"])
     store = RunStore.open(root, create=False)
     results: list[SweepResult] = []
     try:
         for run_id in sorted(known):
             meta = known[run_id]
-            if run_id == live:
+            if run_id in live:
                 results.append(SweepResult(run_id, "kept", "live run holds the lock"))
                 continue
             reason: str | None

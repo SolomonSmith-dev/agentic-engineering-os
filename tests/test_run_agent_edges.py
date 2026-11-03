@@ -11,7 +11,7 @@ import pytest
 from test_claude_adapter import install_fake_claude
 from test_codex_adapter import repo  # noqa: F401  (fixture is used by name)
 
-from agent_team.environments import acquire, read_lock
+from agent_team.environments import acquire, live_run_ids
 from agent_team.run_agent import (
     RunAgentError,
     agent_state,
@@ -65,7 +65,7 @@ def test_a_stale_lock_is_taken_over_and_noted(repo: Path, tmp_path: Path, monkey
     with RunStore.open(repo, create=False) as store:
         notes = [t.note or "" for t in store.transitions(record.run_id)]
     assert any("took over a stale lock from run 20261024-070000-dead00" in n for n in notes)
-    assert read_lock(repo / ".agent-team") is None, "the run releases the lock it took over"
+    assert live_run_ids(repo / ".agent-team") == set(), "the run releases the lock it took over"
 
 
 def test_a_live_lock_blocks_the_run(repo: Path, tmp_path: Path) -> None:
@@ -77,7 +77,23 @@ def test_a_live_lock_blocks_the_run(repo: Path, tmp_path: Path) -> None:
     with RunStore.open(repo, create=False) as store:
         [run] = store.list_runs()
         assert run.outcome == "blocked" and store.transitions(run.run_id)[-1].to_state == "BLOCKED"
-    assert read_lock(repo / ".agent-team").run_id == "20261024-070000-live00"
+    assert live_run_ids(repo / ".agent-team") == {"20261024-070000-live00"}
+
+
+def test_a_child_that_shares_the_callers_lock_neither_takes_nor_releases_one(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = install_fake_claude(tmp_path)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr("agent_team.environments.sandbox.srt_path", lambda: None)
+    (repo / ".agent-team").mkdir(exist_ok=True)
+    acquire(repo / ".agent-team", "20261024-070000-live00", pid=os.getpid())
+    record, result = call(repo, claude=str(fake), lock=False)
+    assert result.status == "succeeded"
+    assert live_run_ids(repo / ".agent-team") == {"20261024-070000-live00"}, "the caller's lock is untouched"
+    with RunStore.open(repo, create=False) as store:
+        notes = " ".join(t.note or "" for t in store.transitions(record.run_id))
+    assert "stale lock" not in notes
 
 
 def test_agent_state_and_requested_autonomy() -> None:

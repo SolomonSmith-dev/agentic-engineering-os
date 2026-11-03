@@ -110,3 +110,6 @@ class RepoConfig(BootstrapModel):
     unverified_commands: dict[CommandKind, list[str]] = Field(default_factory=dict)
     instruction_files: list[str] = Field(default_factory=list, description="Files carrying the marked block.")
     agents: list[str] = Field(default_factory=list, description="Compiled runtime agent files.")
+    max_concurrent_runs: int = Field(
+        default=2, ge=1, le=3, description="Runs that may hold path locks in this repository at once; the ceiling is 3."
+    )

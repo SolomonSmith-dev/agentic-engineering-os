@@ -26,7 +26,7 @@ from agent_team import cli
 from agent_team.adapters.claude import resolve
 from agent_team.adapters.claude.hook import check
 from agent_team.cli import app
-from agent_team.environments import create, read_lock, srt_path
+from agent_team.environments import create, live_run_ids, srt_path
 from agent_team.orchestrator import DefaultExecutor
 from agent_team.orchestrator import pr as pr_mod
 from agent_team.orchestrator.workspace import LEFTOVER_MESSAGE, WorkspaceError, settle
@@ -293,7 +293,7 @@ def test_happy_path_opens_a_draft_pr_from_the_reviewed_commit(repo: Path, world:
     [check_env] = (repo / ".agent-team" / "tmp").glob("*/check-env.txt")
     assert TOKEN not in check_env.read_text() and "GH_TOKEN" not in check_env.read_text()
     assert TOKEN not in (repo / ".agent-team" / "runs.db").read_bytes().decode("utf-8", "replace")
-    assert read_lock(repo / ".agent-team") is None
+    assert live_run_ids(repo / ".agent-team") == set()
 
 
 @pytest.mark.srt

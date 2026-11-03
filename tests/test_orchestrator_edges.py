@@ -29,8 +29,7 @@ from typer.testing import CliRunner
 
 from agent_team import cli
 from agent_team.cli import app
-from agent_team.environments import acquire, read_lock, release
-from agent_team.environments.lock import LockHeldError
+from agent_team.environments import LockHeldError, acquire, live_run_ids, release
 from agent_team.environments.sandbox import Sandbox
 from agent_team.environments.worktree import AllocatorError
 from agent_team.orchestrator import (
@@ -261,7 +260,7 @@ def test_an_artifact_outside_the_artifacts_dir_is_never_inlined(repo: Path) -> N
     assert RunStore.open(repo, create=False) is None, "no child run was started"
 
 
-def test_an_old_claude_blocks_the_node_and_the_lock_comes_back(repo: Path, tmp_path: Path) -> None:
+def test_an_old_claude_blocks_the_node_and_the_lock_stays_with_the_workflow(repo: Path, tmp_path: Path) -> None:
     old = tmp_path / "old-claude"
     old.write_text(f"#!{sys.executable}\nprint('1.0.0 (Claude Code)')\n", encoding="utf-8")
     old.chmod(0o755)
@@ -272,8 +271,7 @@ def test_an_old_claude_blocks_the_node_and_the_lock_comes_back(repo: Path, tmp_p
         given = NodeInput(run_id=RUN, workflow="bug-fix", state="CODE_REVIEW", attempt=1, task=TASK, inputs={})
         result = ex(load_dag(ex.canonical, "bug-fix", "default").node("CODE_REVIEW"), given)
         assert result.blocked and result.blocked.startswith("agent independent-reviewer: claude 1.0.0 is older than")
-        lock = read_lock(state_dir)
-        assert lock is not None and lock.run_id == RUN, "the workflow takes its lock back"
+        assert live_run_ids(state_dir) == {RUN}, "the child never touched the workflow's lock"
     finally:
         release(state_dir, RUN)
 
@@ -460,10 +458,8 @@ def test_a_live_lock_blocks_a_new_workflow_run(repo: Path) -> None:
     try:
         with pytest.raises(LockHeldError):
             run_workflow(repo, CANONICAL, "bug-fix", TASK, executor_factory=lambda c: executor(repo), echo=lambda _: None)
-        with RunStore.open(repo, create=False) as store:
-            [run] = store.list_runs()
-            assert run.outcome == "blocked" and store.transitions(run.run_id)[-1].to_state == "BLOCKED"
-        assert read_lock(state_dir).run_id == "20261024-080000-000000", "the holder's lock is untouched"
+        assert RunStore.open(repo, create=False) is None, "refused before the run record exists"
+        assert live_run_ids(state_dir) == {"20261024-080000-000000"}, "the holder's lock is untouched"
     finally:
         release(state_dir, "20261024-080000-000000")
 
