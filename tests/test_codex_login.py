@@ -10,6 +10,7 @@ import base64
 import json
 import os
 import sys
+import socket
 import threading
 import time
 import urllib.error
@@ -232,6 +233,36 @@ def test_the_account_id_falls_back_to_the_id_token(tmp_path: Path, backend: Back
         call(running)
     assert backend.requests[0]["account"] == ACCOUNT
 
+
+
+def test_connections_without_the_key_cannot_pin_host_threads(
+    tmp_path: Path, backend: Backend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hijacked command can reach the port; idle connections are capped and time out before the key check."""
+    monkeypatch.setattr(login_proxy, "MAX_HANDLERS", 4)
+    monkeypatch.setattr(login_proxy, "CLIENT_TIMEOUT_S", 0.5)
+    path = tmp_path / "auth.json"
+    write_login(path, access_token=access("current"))
+    with login_proxy.running(path, upstream=backend.url) as running:
+        before = threading.active_count()
+        idle = [socket.create_connection(("127.0.0.1", running.port)) for _ in range(20)]
+        for conn in idle:
+            conn.sendall(b"POST /backend-api/codex/responses HTTP/1.1\r\n")  # and never finish the request
+        time.sleep(0.2)
+        assert threading.active_count() - before <= 4, "handler threads are capped"
+        time.sleep(1.0)  # the socket timeout frees them
+        assert call(running)[0] == 200
+        for conn in idle:
+            conn.close()
+
+
+def test_an_oversized_body_is_refused_before_it_is_read(proxy: LoginProxy, backend: Backend) -> None:
+    conn = socket.create_connection(("127.0.0.1", proxy.port))
+    conn.sendall(f"POST /backend-api/codex/responses HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {proxy.run_key}\r\n"
+                 f"Content-Length: {login_proxy.MAX_BODY_BYTES + 1}\r\n\r\n".encode())  # fmt: skip
+    assert conn.recv(64).startswith(b"HTTP/1.1 413")
+    conn.close()
+    assert backend.requests == []
 
 # --- end to end under srt ------------------------------------------------------------
 

@@ -53,6 +53,13 @@ EXPIRY_MARGIN_S = 10 * 60
 UPSTREAM_TIMEOUT_S = 600
 CHUNK = 64 * 1024
 
+# The sandbox can reach this port, so a hijacked command can open connections without the run key.
+# Each is bounded: at most MAX_HANDLERS at once, CLIENT_TIMEOUT_S per socket read or write, and
+# MAX_BODY_BYTES per request body. Codex sends one request at a time, well inside all three.
+MAX_HANDLERS = 16
+CLIENT_TIMEOUT_S = 30
+MAX_BODY_BYTES = 32 * 1024 * 1024
+
 # Hop-by-hop headers, and the ones the proxy sets itself, are never forwarded in either direction.
 HOP_HEADERS = frozenset(
     {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "proxy-connection", "te",
@@ -159,8 +166,7 @@ class LoginProxy:
         return f"127.0.0.1:{self.port}"
 
     def start(self) -> "LoginProxy":
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), _handler(self))
-        self._server.daemon_threads = True
+        self._server = _BoundedServer(("127.0.0.1", 0), _handler(self))
         self._thread = threading.Thread(target=self._server.serve_forever, name="codex-login-proxy", daemon=True)
         self._thread.start()
         return self
@@ -195,6 +201,36 @@ def running(path: Path, **kwargs: str) -> Iterator[LoginProxy]:
         proxy.close()
 
 
+class _BoundedServer(ThreadingHTTPServer):
+    """A threading server that drops a connection outright once MAX_HANDLERS are open."""
+
+    daemon_threads = True
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._slots = threading.BoundedSemaphore(MAX_HANDLERS)
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        if not self._slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+
+class _TooLarge(Exception):
+    pass
+
+
 def _allowed_path(raw: str) -> bool:
     path = urlsplit(raw).path
     return path.startswith(PATH_PREFIX) and ".." not in path.split("/") and "%" not in path
@@ -203,6 +239,7 @@ def _allowed_path(raw: str) -> bool:
 def _handler(proxy: LoginProxy) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
+        timeout = CLIENT_TIMEOUT_S  # a socket timeout, so a request that stalls before its key frees the thread
 
         def log_message(self, format: str, *args: Any) -> None:
             pass  # never log: request lines and headers are the run's, not the operator's
@@ -225,16 +262,21 @@ def _handler(proxy: LoginProxy) -> type[BaseHTTPRequestHandler]:
 
         def _body(self) -> bytes | None:
             if self.headers.get("Transfer-Encoding", "").lower() == "chunked":
-                parts = []
+                parts, total = [], 0
                 while True:
                     size = int(self.rfile.readline().split(b";")[0].strip() or b"0", 16)
                     if size == 0:
                         while self.rfile.readline() not in (b"\r\n", b"\n", b""):
                             pass
                         return b"".join(parts)
+                    total += size
+                    if total > MAX_BODY_BYTES:
+                        raise _TooLarge
                     parts.append(self.rfile.read(size))
                     self.rfile.readline()
             length = int(self.headers.get("Content-Length") or 0)
+            if length > MAX_BODY_BYTES:
+                raise _TooLarge
             return self.rfile.read(length) if length else None
 
         def _forward(self) -> None:
@@ -248,7 +290,14 @@ def _handler(proxy: LoginProxy) -> type[BaseHTTPRequestHandler]:
             if not _allowed_path(self.path):
                 self._refuse(403, "only the Codex backend is forwarded")
                 return
-            body = self._body()
+            try:
+                body = self._body()
+            except _TooLarge:
+                self._refuse(413, f"a request body is at most {MAX_BODY_BYTES} bytes")
+                return
+            except ValueError:
+                self._refuse(400, "malformed request body")
+                return
             headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP_HEADERS | CREDENTIAL_HEADERS}
             try:
                 tokens = proxy.access()
