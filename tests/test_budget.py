@@ -247,3 +247,47 @@ def test_metered_marks_the_result_unknown_and_halts() -> None:
     out = _metered(Store(), "r", watch, result, None)  # type: ignore[arg-type]
     assert out.usage_known is False
     assert out.status == "budget_exceeded" and "unknown" in (out.reason or "")
+
+
+# --- a watch that raises never orphans the worker -------------------------------------------
+
+
+@pytest.mark.parametrize("runtime", ["claude", "codex"])
+@pytest.mark.parametrize("error", [OSError("trace write failed"), ValueError("cache prices are required to price usage")])
+def test_a_watch_exception_kills_the_worker_process_group(tmp_path, runtime: str, error: Exception) -> None:  # noqa: ANN001
+    import importlib
+    import os
+    import signal
+    import subprocess
+    import time
+
+    invoke = importlib.import_module(f"agent_team.adapters.{runtime}.invoke")
+    pidfile = tmp_path / "pid"
+    script = f'echo $$ > {pidfile}; echo \'{{"type": "assistant", "message": {{"id": "a"}}}}\'; sleep 60 & sleep 60'
+    mode = "login" if runtime == "claude" else "api_key"
+    inv = invoke.Invocation(argv=["sh", "-c", script], env=dict(os.environ), mode=mode)
+
+    def watch(event):  # noqa: ANN001, ANN202
+        raise error
+
+    start = time.monotonic()
+    try:
+        with pytest.raises(type(error)):
+            invoke.execute(inv, prompt="", cwd=tmp_path, stderr_path=tmp_path / "err", timeout_s=30, watch=watch)
+        pid = int(pidfile.read_text())
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            # ps, not killpg(pid, 0): macOS answers that probe for a group whose members are all gone.
+            groups = subprocess.run(["ps", "-axo", "pgid="], capture_output=True, text=True, check=True).stdout.split()
+            if str(pid) not in groups:
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail("the worker's process group outlived the watch exception")
+        assert time.monotonic() - start < 15
+    finally:
+        if pidfile.exists():
+            try:
+                os.killpg(int(pidfile.read_text()), signal.SIGKILL)
+            except (ProcessLookupError, ValueError):
+                pass

@@ -316,14 +316,23 @@ def execute(
                 proc.stdin.close()
             except BrokenPipeError:
                 pass  # the worker exited before reading; its stderr says why
-            for line in proc.stdout:
-                event = parser.feed(line, time.monotonic(), datetime.now(UTC))
-                if watch is not None and event is not None and halted is None:
-                    halted = watch(event)
-                    if halted is not None:
-                        _killpg()  # the budget is spent: stop the worker and everything it started
-                        break
+            try:
+                for line in proc.stdout:
+                    event = parser.feed(line, time.monotonic(), datetime.now(UTC))
+                    if watch is not None and event is not None and halted is None:
+                        halted = watch(event)
+                        if halted is not None:
+                            _killpg()  # the budget is spent: stop the worker and everything it started
+                            break
+            except BaseException:
+                # The watch (a trace write, a price) or the read failed: never leave the worker running.
+                _killpg()
+                proc.wait()
+                _killpg()  # again: a child forked while the first signal landed is still in the group
+                raise
             exit_code = proc.wait()
+            if halted is not None or timed_out.is_set():
+                _killpg()  # sweep a child forked while the kill landed
         finally:
             timer.cancel()
     stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
