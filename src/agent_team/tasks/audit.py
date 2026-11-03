@@ -525,6 +525,12 @@ def _package_json_hits(root: Path, base: str, head: str, path: str) -> list[str]
         for key, leaf in _changed(_dig(b, section), _dig(h, section)).items():
             if _json_leaf_source(leaf):
                 hits.append(f"{section}.{_name(key)} -> {json.loads(leaf)}")
+        if section in ("overrides", "resolutions", "pnpm.overrides"):
+            # Removing an override restores the original source of a retained
+            # transitive dependency; it is not ordinary dependency removal.
+            for key, leaf in _changed(_dig(h, section), _dig(b, section)).items():
+                if _json_leaf_source(leaf):
+                    hits.append(f"{section}.{_name(key)} source override removed or replaced")
     return hits
 
 

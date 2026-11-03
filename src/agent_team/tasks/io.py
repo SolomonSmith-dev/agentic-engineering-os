@@ -100,13 +100,25 @@ def _scan_flow_line(
 
 
 def find_result_block(text: str) -> tuple[int, int] | None:
+    # A column-zero continuation inside a quoted scalar is not a mapping key.
+    # Let the YAML parser identify the real top-level key before scanning its bytes.
+    try:
+        root = yaml.compose(text, Loader=yaml.SafeLoader)
+    except yaml.YAMLError:
+        return None
+    if not isinstance(root, yaml.MappingNode) or root.flow_style:
+        return None
+    keys = [key for key, _ in root.value if isinstance(key, yaml.ScalarNode) and key.value == "result"]
+    if len(keys) != 1 or keys[0].start_mark.column != 0:
+        return None
+    key_offset = keys[0].start_mark.index
     start = end = None
     last_field_end = None
     offset = 0
     lines = text.splitlines(keepends=True)
     for idx, line in enumerate(lines):
         if start is None:
-            if m := RESULT_KEY.match(line):
+            if offset == key_offset and (m := RESULT_KEY.match(line)):
                 start = offset
                 last_field_end = offset + len(line)
                 val = line[m.end() :].lstrip(" \t")
@@ -167,9 +179,29 @@ def splice_result(text: str, result: TaskResult) -> str:
     span = find_result_block(text)
     if span is not None:
         return text[: span[0]] + block + text[span[1] :]
-    if text and not text.endswith("\n"):
-        text += newline
-    return text + block
+    parsed = yaml.safe_load(text)
+    if not isinstance(parsed, dict) or "result" in parsed:
+        raise TaskFileError(["yaml: cannot safely locate the result entry"])
+    # Keep an explicit end marker (and any trailing comments) after the new entry.
+    insertion = len(text)
+    try:
+        for event in yaml.parse(text, Loader=yaml.SafeLoader):
+            if isinstance(event, yaml.DocumentEndEvent) and event.explicit:
+                insertion = event.start_mark.index
+                break
+    except yaml.YAMLError as exc:
+        raise TaskFileError(["yaml: cannot safely append a result"]) from exc
+    prefix, suffix = text[:insertion], text[insertion:]
+    if prefix and not prefix.endswith("\n"):
+        prefix += newline
+    candidate = prefix + block + suffix
+    # Unsupported mapping shapes must never silently overwrite request metadata.
+    before, after = yaml.safe_load(text), yaml.safe_load(candidate)
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        raise TaskFileError(["yaml: result requires a top-level mapping"])
+    if {k: v for k, v in before.items() if k != "result"} != {k: v for k, v in after.items() if k != "result"}:
+        raise TaskFileError(["yaml: result splice changed task metadata"])
+    return candidate
 
 
 def sidecar_path(path: Path, task_id: str) -> Path:
@@ -210,5 +242,9 @@ def write_result(loaded: LoadedTaskFile, result: TaskResult) -> Path:
         return write_sidecar(path, loaded.task.id, result)
     if without_result(current) != without_result(loaded.text):
         return write_sidecar(path, loaded.task.id, result)
-    _atomic_write(path, splice_result(current, result), mode_from=path)
+    try:
+        updated = splice_result(current, result)
+    except (TaskFileError, yaml.YAMLError):
+        return write_sidecar(path, loaded.task.id, result)
+    _atomic_write(path, updated, mode_from=path)
     return path

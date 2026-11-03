@@ -198,3 +198,25 @@ def test_find_result_block_unbalanced_flow_mapping_returns_none():
     )
     assert find_result_block(unbalanced) is None
 
+
+
+@pytest.mark.parametrize("existing", ["", "result: null\n"])
+def test_result_key_inside_quoted_request_is_not_spliced(tmp_path, existing):
+    text = BODY.replace("request: 'quoted: yes'", 'request: "do work\nresult: not a key\nmore work"') + existing
+    p = tmp_path / "T-0001.yaml"
+    p.write_text(text)
+    loaded = load_task_file(p)
+    assert write_result(loaded, RESULT) == p
+    after = load_task_file(p)
+    assert after.task.request == loaded.task.request
+    assert after.task.result == RESULT
+    assert without_result(p.read_text()) == without_result(text)
+
+
+@pytest.mark.parametrize("ending", ["...\n", "... # end\n", "..."])
+def test_new_result_precedes_document_end(tmp_path, ending):
+    p = tmp_path / "T-0001.yaml"
+    p.write_text(BODY + ending)
+    assert write_result(load_task_file(p), RESULT) == p
+    assert load_task_file(p).task.result == RESULT
+    assert p.read_text().endswith(ending)

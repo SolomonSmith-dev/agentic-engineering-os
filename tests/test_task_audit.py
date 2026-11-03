@@ -622,7 +622,8 @@ def test_json_key_collision_cannot_hide_a_source(git_repo: Path):
     base = '{"overrides":{"a.b":"github:o/r"}}'
     dep_repo(git_repo, {"package.json": base})
     new = '{"overrides":{"a":{"b":"github:o/r"}}}'
-    assert rules(change(git_repo, {"package.json": new})) == ["dep-source"]
+    # Distinct tuple keys: one source removed and a different one added.
+    assert rules(change(git_repo, {"package.json": new})) == ["dep-source", "dep-source"]
 
 
 @pytest.mark.parametrize("value", ["a:b", "x/y", "~/x", "user@host:p", ".", "..", ".tgz/a"])
@@ -1062,3 +1063,20 @@ def test_catalog_reference_with_a_changed_workspace_file_is_unverifiable(git_rep
     assert ("dep-unverifiable", "package.json") in {(f.rule, f.where) for f in found}
     git(git_repo, "reset", "-q", "--hard", "HEAD~1")
     assert change(git_repo, {"package.json": MIN_PKG.replace("^1.0.0", "catalog:")}) == []
+
+
+@pytest.mark.parametrize("section", ["overrides", "resolutions", "pnpm.overrides"])
+def test_removing_js_source_override_is_a_source_change(git_repo, section):
+    import json
+    before = {"dependencies": {"retained": "1.0.0"}}
+    after = dict(before)
+    if section == "pnpm.overrides":
+        before["pnpm"] = {"overrides": {"transitive": "https://example.test/pkg.tgz"}}
+    else:
+        before[section] = {"transitive": "https://example.test/pkg.tgz"}
+    p = git_repo / "package.json"
+    p.write_text(json.dumps(before))
+    base = commit_all(git_repo, "source override")
+    p.write_text(json.dumps(after))
+    head = commit_all(git_repo, "remove source override")
+    assert audit_dependency_changes(git_repo, base, head)
