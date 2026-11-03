@@ -142,6 +142,13 @@ class BudgetMeter:
         self.halted: Halt | None = None
         self.trace: Any | None = None  # duck-typed: emit(event, **fields)
 
+    def seed(self, *, tokens: int, usd: float, elapsed_s: float, unknown: Sequence[str]) -> None:
+        """Carry an earlier session's spend into this meter (a resume). Never lowers a counter."""
+        self.tokens = max(self.tokens, int(tokens))
+        self.usd = max(self.usd, float(usd))
+        self._seed_s = max(self._seed_s, float(elapsed_s))
+        self.unknown.extend(u for u in unknown if u not in self.unknown)
+
     def _emit(self, event: str, **values: Any) -> None:
         if self.trace is not None:
             self.trace.emit(event, **values)

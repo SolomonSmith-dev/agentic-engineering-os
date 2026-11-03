@@ -81,3 +81,39 @@ def trace_usd(events: Iterable[Mapping[str, Any]]) -> float:
 
 def trace_tokens(events: Iterable[Mapping[str, Any]]) -> int:
     return sum(int(e.get("tokens") or 0) for e in events if e.get("event") == "usage")
+
+
+def trace_unknown(events: Iterable[Mapping[str, Any]]) -> list[str]:
+    """Why spend is not fully known: one entry per `usage_unknown` line."""
+    return [str(e.get("detail") or "usage unknown") for e in events if e.get("event") == "usage_unknown"]
+
+
+def _at(event: Mapping[str, Any]) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(event["at"]).replace("Z", "+00:00"))
+    except (KeyError, ValueError):
+        return None
+
+
+def trace_elapsed_s(events: Iterable[Mapping[str, Any]]) -> float:
+    """Wall clock the run has spent working: each session (start or resume to its last line), summed.
+
+    The downtime between an interruption and the resume is not counted; the last line a
+    session wrote is the lower bound on when it stopped.
+    """
+    total = 0.0
+    first: datetime | None = None
+    last: datetime | None = None
+    for event in events:
+        at = _at(event)
+        if at is None:
+            continue
+        if event.get("event") in ("run_started", "run_resumed") and first is not None and last is not None:
+            total += max(0.0, (last - first).total_seconds())
+            first = None
+        if first is None:
+            first = at
+        last = at
+    if first is not None and last is not None:
+        total += max(0.0, (last - first).total_seconds())
+    return total

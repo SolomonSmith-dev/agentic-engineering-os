@@ -23,7 +23,7 @@ from agent_team.orchestrator.machine import Echo, Executor, reenter, start, walk
 from agent_team.run_agent import Canonical, RunAgentError, load_canonical
 from agent_team.runs.render import status_line
 from agent_team.runs.store import STATE_DIR, RunStore, repo_root
-from agent_team.runs.trace import Trace, open_trace
+from agent_team.runs.trace import Trace, open_trace, read_trace, trace_elapsed_s, trace_tokens, trace_unknown, trace_usd
 from agent_team.schemas.runs import RunRecord
 
 # Builds the executor once the canonical tree is loaded; tests pass their own.
@@ -132,10 +132,16 @@ def resume_workflow(
         try:
             trace = open_trace(root, run_id, redaction)
             if meter is not None:
+                # The trace, not the store: it holds usage metered by a node that died before its result was stored.
+                events = read_trace(trace.path)
+                meter.seed(tokens=trace_tokens(events), usd=trace_usd(events), elapsed_s=trace_elapsed_s(events),
+                           unknown=trace_unknown(events))  # fmt: skip
                 meter.trace = trace
             reenter(store, dag, run_id, echo=echo, note=note, trace=trace)
             trace.emit("run_resumed", run=run_id, budget=meter.limits.as_dict() if meter else None,
-                       spent_tokens=meter.tokens if meter else None, spent_usd=meter.usd if meter else None)  # fmt: skip
+                       spent_tokens=meter.tokens if meter else None, spent_usd=meter.usd if meter else None,
+                       spent_minutes=meter.elapsed_s() / 60 if meter else None,
+                       spend_unknown=bool(meter.unknown) if meter else None)  # fmt: skip
             return _ended(walk(store, dag, executor, run_id, echo=echo, trace=trace), trace)
         finally:
             release(state_dir, run_id)
