@@ -434,8 +434,27 @@ def test_gemfile_sources(git_repo: Path):
         assert rules(found) == ["dep-source"], add
         git(git_repo, "reset", "-q", "--hard", "HEAD~1")
     found = change(git_repo, {"Gemfile": GEMFILE.replace("rubygems.org", "evilgems.org")})
-    assert rules(found) == ["dep-source"]
+    assert found and set(rules(found)) == {"dep-source"}  # the added and the removed source line both flag
 
+
+
+def test_gemfile_is_an_allowlist_not_a_keyword_denylist(git_repo: Path):
+    dep_repo(git_repo, {"Gemfile": GEMFILE})
+    ok = GEMFILE + '\n# tools\ngroup :development, :test do\n  gem "rspec", "~> 3.13"\nend\n'
+    assert change(git_repo, {"Gemfile": ok}) == []
+    git(git_repo, "reset", "-q", "--hard", "HEAD~1")
+    for add in (
+        '\ngit_source(:mine) { |n| "https://evil.example/#{n}.git" }\ngem "foo", mine: "x/foo"\n',
+        '\ngem "foo", **OPTS\n',
+        '\ngem "foo"; system("id")\n',
+        '\neval(File.read("extra.rb"))\n',
+        '\ngem "foo",\n  git: "https://x/foo"\n',
+    ):
+        found = change(git_repo, {"Gemfile": GEMFILE + add})
+        assert found and set(rules(found)) == {"dep-source"}, add
+        git(git_repo, "reset", "-q", "--hard", "HEAD~1")
+    found = change(git_repo, {"Gemfile": GEMFILE + "\rgem \"foo\"\n"})
+    assert found and set(rules(found)) == {"dep-source"}
 
 
 def test_go_mod_replace_directives(git_repo: Path):

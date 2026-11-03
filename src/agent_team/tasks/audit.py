@@ -726,17 +726,29 @@ def _requirements_hits(root: Path, base: str, head: str, path: str) -> list[str]
     return [h.strip() for h in dict.fromkeys(hits)]
 
 
-_GEMFILE_SOURCE = re.compile(
-    r"(?:\b(?:git|github|path):|:(?:git|github|path)\b|\bsource\b|[a-z][a-z0-9+.-]*://)",
-    re.I,
-)
+# A Gemfile is Ruby: git_source blocks, eval, splats and `;` can all change where gems come from, so a denylist of
+# source keywords is bypassable. Allowlist instead: a changed line passes only if it is blank, a comment, `end`, a
+# `group :a, :b do` opener, or a plain `gem "name"[, "constraint"...]`. Anything else, added or removed, is a hit.
+_GEM_CONSTRAINT_ONLY = re.compile(r"""^\s*gem\s+(["'])[A-Za-z0-9_.\-]+\1(?:\s*,\s*(["'])\s*[<>=~!]*\s*[0-9][A-Za-z0-9_.\-]*\2)*\s*(?:#.*)?$""")
+_GEM_GROUP = re.compile(r"^\s*group\s+:\w+(?:\s*,\s*:\w+)*\s+do\s*(?:#.*)?$")
+
+
+def _gemfile_line_ok(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#") or stripped == "end":
+        return True
+    return bool(_GEM_CONSTRAINT_ONLY.match(line) or _GEM_GROUP.match(line))
 
 
 def _gemfile_hits(root: Path, base: str, head: str, path: str) -> list[str]:
-    if _blob(root, head, path) is None:
+    text = _show(root, head, path)
+    if text is None:
         return []  # deleted: nothing left to install from
-    added, _ = _diff_lines(root, base, head, path)
-    hits = [line for _, line in added if _GEMFILE_SOURCE.search(line)]
+    if _SEPARATORS.search(text):
+        return [f"{path} has a line separator other than \\n; Ruby would split its lines differently"]
+    added, removed = _diff_lines(root, base, head, path)
+    hits = [line for _, line in added if not _gemfile_line_ok(line)]
+    hits += [f"removed: {line}" for line in removed if not _gemfile_line_ok(line)]
     return [h.strip() for h in dict.fromkeys(hits)]
 
 
