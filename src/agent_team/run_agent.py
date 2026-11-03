@@ -30,7 +30,7 @@ from typing import get_args
 
 from agent_team.adapters import codex as codex_adapter
 from agent_team.adapters.claude.compile import compile_agent
-from agent_team.adapters.claude.invoke import RUNTIME, build_invocation, check_version, execute, record
+from agent_team.adapters.claude.invoke import RUNTIME, StreamParser, build_invocation, check_version, execute, record
 from agent_team.adapters.codex.invoke import API_DOMAINS
 from agent_team.adapters.codex.invoke import auth_mode as codex_auth_mode
 from agent_team.budget import BudgetMeter, StreamWatch, Usage, claude_usage, turn_usage
@@ -279,7 +279,7 @@ def run_agent(
             finally:
                 stderr_path.unlink(missing_ok=True)  # only the redacted tail is kept, in the result
             if watch is not None:
-                result = _metered(store, run_id, watch, result, claude_usage(result.usage or {}))
+                result = _metered(store, run_id, watch, result, claude_reported(parser))
             record(store, run_id, parser, result)
             _trace_calls(store, run_id, trace)
             if after is not None and result.status == "succeeded":
@@ -295,11 +295,28 @@ def run_agent(
         return store.get_run(run_id), result
 
 
-def _metered(store: RunStore, run_id: str, watch: StreamWatch, result: AdapterResult, reported: Usage) -> AdapterResult:
+def claude_reported(parser: StreamParser) -> Usage | None:
+    """The Claude call's final usage report, or None when there was none (no `result` event)."""
+    usage = parser.result.get("usage") if parser.result is not None else None
+    return claude_usage(usage) if isinstance(usage, dict) else None
+
+
+def codex_reported(parser: codex_adapter.StreamParser) -> Usage | None:
+    """The Codex call's usage, or None when its turn never completed (killed or failed mid-turn).
+
+    turn.completed usage is what the stream already metered; the parser's sum is the same events.
+    """
+    if parser.terminal != "turn.completed":
+        return None
+    return turn_usage({"type": "turn.completed", "usage": parser.usage}) or Usage()
+
+
+def _metered(store: RunStore, run_id: str, watch: StreamWatch, result: AdapterResult, reported: Usage | None) -> AdapterResult:
     """Fold the call's final usage report into the meter, then cost the call at list price.
 
     The streamed events are what can stop a worker mid-call; the final report catches any
-    usage the stream did not carry, so a quiet stream is still counted (fail closed).
+    usage the stream did not carry, so a quiet stream is still counted (fail closed). No
+    report at all (`reported` None) records the call's usage as unknown and halts the run.
     """
     watch.reconcile(reported, source=f"{watch.runtime}:final-report")
     if result.status == "budget_exceeded" and watch.meter.halted is None:
@@ -309,7 +326,7 @@ def _metered(store: RunStore, run_id: str, watch: StreamWatch, result: AdapterRe
         # The call finished, but the report showed the limit was crossed: the run still halts.
         result = result.model_copy(update={"status": "budget_exceeded", "reason": watch.meter.halted.reason()})
     store.add_cost(run_id, 0.0, tokens=watch.tokens)
-    return result.model_copy(update={"cost_usd": watch.usd})
+    return result.model_copy(update={"cost_usd": watch.usd, "usage_known": watch.usage_known})
 
 
 def _trace_calls(store: RunStore, run_id: str, trace: Trace | None) -> None:
@@ -402,8 +419,6 @@ def _run_codex(
     finally:
         stderr_path.unlink(missing_ok=True)  # only the redacted tail is kept, in the result
     if watch is not None:
-        # turn.completed usage is what the stream already metered; the parser's sum is the same events.
-        reported = turn_usage({"type": "turn.completed", "usage": parser.usage}) or Usage()
-        result = _metered(store, run_id, watch, result, reported)
+        result = _metered(store, run_id, watch, result, codex_reported(parser))
     codex_adapter.record(store, run_id, parser, result)
     return result

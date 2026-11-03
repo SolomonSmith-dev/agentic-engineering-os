@@ -13,6 +13,9 @@ What the meter can and cannot promise:
   way the last event can carry the run past the limit: that overshoot is
   recorded (`Halt.overshoot`, the `budget_halt` trace line), never hidden. The
   dollar and token limits are therefore enforced limits, not hard caps.
+- Usage a runtime never reported (a Codex turn killed before `turn.completed`, a
+  Claude call with no `result` event) is recorded as unknown, never as zero, and
+  an unknown spend halts the run: the meter fails closed.
 - Wall clock is a hard bound: every agent call and orchestrator command gets a
   timeout no longer than the time left, and the worker's process group is killed
   when it expires.
@@ -21,7 +24,7 @@ What the meter can and cannot promise:
 """
 
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from typing import Any, Literal
 
@@ -126,6 +129,7 @@ class BudgetMeter:
         spent_tokens: int = 0,
         spent_usd: float = 0.0,
         elapsed_s: float = 0.0,
+        unknown: Sequence[str] = (),
     ) -> None:
         self.limits = limits
         self.prices = dict(prices)
@@ -134,6 +138,7 @@ class BudgetMeter:
         self._seed_s = float(elapsed_s)
         self.tokens = int(spent_tokens)
         self.usd = float(spent_usd)
+        self.unknown: list[str] = list(unknown)  # why spend is not fully known; non-empty halts
         self.halted: Halt | None = None
         self.trace: Any | None = None  # duck-typed: emit(event, **fields)
 
@@ -145,7 +150,9 @@ class BudgetMeter:
         return self._seed_s + (self._clock() - self._start)
 
     def _over(self) -> Halt | None:
-        """Spend at a limit is a halt, not only spend past it."""
+        """Spend at a limit is a halt, not only spend past it; unknown spend is a halt too."""
+        if self.unknown:
+            return Halt("usd", self.usd, self.limits.usd, "spend is unknown: " + "; ".join(self.unknown))
         if self.tokens >= self.limits.tokens:
             return Halt("tokens", self.tokens, self.limits.tokens)
         if self.usd >= self.limits.usd:
@@ -177,6 +184,14 @@ class BudgetMeter:
         self._emit("usage", model=model, source=source, **usage.as_dict(), tokens=usage.counted, usd=usd)
         return self.check(granularity=granularity)
 
+    def mark_unknown(self, detail: str, *, source: str) -> Halt:
+        """Usage happened that no event reported: record it as unknown (never 0) and halt."""
+        self.unknown.append(detail)
+        self._emit("usage_unknown", source=source, detail=detail)
+        halt = self.check()
+        assert halt is not None
+        return halt
+
     def refuse_unpriced(self, model: str) -> Halt:
         """A usage event named a model with no price: stop rather than count it as $0."""
         return self.stop("usd", f"model {model!r} has no verified list price")
@@ -207,8 +222,7 @@ class BudgetMeter:
         halts and this returns 0.0, so the caller must not start the call (see `check`).
         """
         left = min(cap, self.remaining_usd())
-        if left < CALL_FLOOR_USD:
-            self.check()
+        if self.check() is not None or left < CALL_FLOOR_USD:
             return 0.0
         return left
 
@@ -274,6 +288,7 @@ class StreamWatch:
     model: str
     usage: Usage = field(default_factory=Usage)
     usd: float = 0.0
+    usage_known: bool = True  # False once the call's final usage report was missing
     _seen: dict[str, Usage] = field(default_factory=dict, repr=False)
 
     @property
@@ -311,6 +326,17 @@ class StreamWatch:
         halt = self.meter.check(granularity=self.granularity)
         return halt.reason() if halt is not None else None
 
-    def reconcile(self, total: Usage, *, source: str) -> None:
-        """Add whatever the call's final report shows beyond the streamed events (fail closed on a quiet stream)."""
+    def reconcile(self, total: Usage | None, *, source: str) -> None:
+        """Add whatever the call's final report shows beyond the streamed events (fail closed on a quiet stream).
+
+        `total` None means the runtime never reported the call's usage: what streamed is a
+        lower bound, so the spend is recorded as unknown and the meter halts.
+        """
+        if total is None:
+            self.usage_known = False
+            self.meter.mark_unknown(
+                f"the {self.runtime} call ended without a final usage report; "
+                f"{self.usage.counted} streamed tokens are a lower bound", source=source,
+            )  # fmt: skip
+            return
         self._add(None, total - self.usage, source)

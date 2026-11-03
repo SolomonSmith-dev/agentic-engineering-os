@@ -38,6 +38,10 @@ class AdapterResult(BaseModel):
     tool_calls: int = Field(default=0, ge=0)
     permission_denials: list[str] = Field(default_factory=list, description="Tool names the runtime denied.")
     usage: dict[str, int] | None = Field(default=None, description="Token counts as the runtime reports them.")
+    usage_known: bool = Field(
+        default=True,
+        description="False when the runtime never reported the call's final usage (killed mid-turn): cost_usd is then a lower bound.",
+    )
     exit_code: int | None = None
     stderr_tail: str | None = Field(default=None, description="Redacted end of stderr when the run failed.")
 

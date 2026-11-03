@@ -161,3 +161,89 @@ def test_call_budget_is_what_is_left_under_the_cap() -> None:
     assert m.call_budget_usd(0.25) == 0.25
     m.add(MODEL, Usage(output_tokens=450_000), source="t")  # $0.90
     assert m.call_budget_usd(0.25) == pytest.approx(0.10)
+
+
+# --- unknown usage fails closed ----------------------------------------------------------
+
+
+def test_unknown_usage_is_recorded_as_unknown_and_halts() -> None:
+    m = meter()
+    sink = Sink()
+    m.trace = sink
+    watch = StreamWatch(m, "codex", MODEL)
+    watch.reconcile(None, source="codex:final-report")
+    assert watch.usage_known is False and m.unknown
+    assert m.tokens == 0  # nothing invented
+    halt = m.check()
+    assert halt is not None and halt.limit == "usd" and "unknown" in halt.reason()
+    assert any(e == "usage_unknown" for e, _ in sink.events)
+
+
+def test_a_meter_seeded_with_unknown_spend_halts_before_any_call() -> None:
+    m = meter(unknown=("codex turn killed mid-way",))
+    assert m.check() is not None
+    assert m.call_budget_usd(1.0) == 0.0
+
+
+def _claude_parser(*events: dict):  # noqa: ANN202
+    import json
+    from datetime import UTC, datetime
+
+    from agent_team.adapters.claude.invoke import StreamParser
+
+    parser = StreamParser()
+    for event in events:
+        parser.feed(json.dumps(event), 0.0, datetime.now(UTC))
+    return parser
+
+
+def _codex_parser(*events: dict):  # noqa: ANN202
+    import json
+    from datetime import UTC, datetime
+
+    from agent_team.adapters.codex.invoke import StreamParser
+
+    parser = StreamParser()
+    for event in events:
+        parser.feed(json.dumps(event), 0.0, datetime.now(UTC))
+    return parser
+
+
+def test_a_claude_call_with_no_result_event_reports_unknown_usage() -> None:
+    from agent_team.run_agent import claude_reported
+
+    in_flight = _claude_parser(assistant("a", input_tokens=100, output_tokens=1))
+    assert claude_reported(in_flight) is None
+    done = _claude_parser(assistant("a", input_tokens=100, output_tokens=1),
+                          {"type": "result", "subtype": "success", "usage": {"input_tokens": 100, "output_tokens": 9}})  # fmt: skip
+    assert claude_reported(done) == Usage(input_tokens=100, output_tokens=9)
+
+
+def test_a_codex_call_killed_mid_turn_reports_unknown_usage() -> None:
+    from agent_team.run_agent import codex_reported
+
+    assert codex_reported(_codex_parser({"type": "thread.started", "thread_id": "t"})) is None
+    failed = _codex_parser({"type": "turn.failed", "error": {"message": "boom"}})
+    assert codex_reported(failed) is None
+    done = _codex_parser({"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 2}})
+    assert codex_reported(done) == Usage(input_tokens=10, output_tokens=2)
+
+
+def test_metered_marks_the_result_unknown_and_halts() -> None:
+    from agent_team.run_agent import _metered
+    from agent_team.schemas.adapter import AdapterResult
+
+    class Store:
+        def __init__(self) -> None:
+            self.calls: list[tuple] = []
+
+        def add_cost(self, run_id: str, cost_usd: float, *, tokens: int = 0) -> None:
+            self.calls.append((run_id, cost_usd, tokens))
+
+    m = meter()
+    watch = StreamWatch(m, "claude", MODEL)
+    watch(assistant("a", input_tokens=100, output_tokens=1))
+    result = AdapterResult(status="succeeded", runtime="claude")
+    out = _metered(Store(), "r", watch, result, None)  # type: ignore[arg-type]
+    assert out.usage_known is False
+    assert out.status == "budget_exceeded" and "unknown" in (out.reason or "")
