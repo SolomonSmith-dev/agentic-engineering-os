@@ -1,24 +1,60 @@
 # agentic-engineering-os
 
-`agent-team` runs Claude Code workers and an independent reviewer inside sandboxed git worktrees, records every run in SQLite, and gates pull requests on the reviewer's verdict.
+[![CI](https://github.com/SolomonSmith-dev/agentic-engineering-os/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/SolomonSmith-dev/agentic-engineering-os/actions/workflows/ci.yml)
 
-Status: build-order steps 1 to 13 of 15 are merged, version 0.1.0. The CLI answers `--version`, checks the host (`agent-team doctor`), discovers and configures a target repository (`agent-team init`, `agent-team configure`), builds repository memory with the archaeologist (`agent-team inspect`), runs one canonical agent end to end (`agent-team run --agent`, on Claude Code or, for the reviewer, Codex), runs the bug-fix workflow from reproduction to a draft PR (`agent-team run --workflow bug-fix`, `agent-team resume`), compares the team with two single-agent baselines on ten tasks with hidden verifiers (`agent-team eval run`, `agent-team eval report`, `agent-team eval --last`; no paid eval has been run yet), reads the run record (`agent-team trace`), sweeps stale run worktrees (`agent-team env sweep`), validates `canonical/` against the pydantic schemas (`agent-team validate`) and exports them as JSON Schema (`agent-team schema export`). See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the target design and build order.
+`agent-team` runs Claude Code workers in sandboxed git worktrees, records every tool call in SQLite, and opens a draft pull request only after an independent reviewer approves the diff.
+
+## Why this is hard
+
+An agent's word is a claim, not evidence. The orchestrator re-runs the reproduction before the fix, runs the tests itself at the reviewed commit, and hands the reviewer the plan, the diff and the test output, never the implementer's transcript. Workers run under `srt` with no network beyond an allowlist and no read of `.env`, key files or the GitHub credential; `git push` and `gh` stay in the orchestrator's process. The eval harness runs the team against two single-agent baselines on tasks whose verifiers are copied in only after the arm exits, so no arm can read the answer.
+
+Status: build-order steps 1 to 14 of 15 are merged (step 15 is dogfood on a real team repository), version 0.1.0. The eval harness is built; no paid eval has been run yet, so there is no measured result to report. The Codex adapter has not been run against a real Codex. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the target design and the build order.
+
+## Evidence
+
+- 524 tests: `uv run pytest --collect-only -q`. CI runs them on Ubuntu and macOS under the real sandbox runtime (`AGENT_TEAM_REQUIRE_SRT=1`, [.github/workflows/ci.yml](.github/workflows/ci.yml)).
+- Build order: 14 of 15 steps merged, one PR per step ([docs/ARCHITECTURE.md, section 11](docs/ARCHITECTURE.md#11-build-order)).
+- Eval: 10 tasks with hidden verifiers in [evals/tasks/](evals/tasks), 3 arms, caps of $1.00 per cell and $15.00 per eval.
+- Threat model and residual risk written down: [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), [docs/SECURITY.md](docs/SECURITY.md).
+- Solo project, Apache-2.0.
+
+## Quick start
+
+```bash
+uv tool install git+https://github.com/SolomonSmith-dev/agentic-engineering-os   # pin: @0.1.0
+agent-team doctor                                      # host, runtimes, auth state; writes nothing
+agent-team init /path/to/repo                          # read-only discovery -> .agent-team/proposal.yaml; set ask.approved: true
+agent-team configure /path/to/repo                     # shows the diff, asks, then writes config and agent files
+agent-team run --workflow bug-fix --repo /path/to/repo --test-command "uv run pytest" "Fix the crash on empty input."
+```
+
+Requires Python 3.12, `uv`, `git`, Claude Code (`claude`) and `gh`; `srt` (`@anthropic-ai/sandbox-runtime`) for anything above autonomy A2. Day one in full: [docs/BOOTSTRAP.md](docs/BOOTSTRAP.md).
+
+## Commands
+
+| Command | What it does | Details |
+| --- | --- | --- |
+| `agent-team doctor` | Host, runtimes, auth state, egress check; read-only | [Doctor](#doctor) |
+| `agent-team init <repo>` | Read-only discovery into `.agent-team/proposal.yaml` | [Init and configure](#init-and-configure-a-target-repository) |
+| `agent-team configure <repo>` | Approved proposal to `config.yaml`, marked blocks, agent files; diff before write | [Init and configure](#init-and-configure-a-target-repository) |
+| `agent-team inspect <repo>` | Archaeologist agent writes repository memory; detected commands verified in the sandbox | [Inspect](#inspect-repository-memory) |
+| `agent-team run --agent <name>` | One canonical agent, headless, every tool call recorded | [Run one agent](#run-one-agent) |
+| `agent-team run --workflow bug-fix` | Reproduce, plan, implement, test, review, draft PR | [Run a workflow](#run-a-workflow), [Implementer and draft PR](#implementer-evidence-and-the-draft-pr) |
+| `agent-team resume <run-id>` | Re-enter an interrupted workflow at its checkpoint | [Run a workflow](#run-a-workflow) |
+| `agent-team run --runtime codex` | The reviewer on Codex instead of Claude Code (opt-in, untested against a real Codex) | [Reviewer on Codex](#run-the-reviewer-on-codex) |
+| `agent-team eval run` / `eval report` / `eval --last` | Team vs two baselines on hidden-verifier tasks; dry run by default | [Eval](#eval-the-team-against-two-baselines) |
+| `agent-team trace [run-id] [--calls] [--focus]` | The run record: runs, transitions, tool calls, drift signals | [Run record and trace](#run-record-and-trace), [Focus and lessons](#focus-and-lessons) |
+| `agent-team lessons propose` / `approve` / `list` / `quarantine` | Reviewer findings into human-approved rules for later prompts | [Focus and lessons](#focus-and-lessons) |
+| `agent-team env sweep` | Dispose worktrees of ended runs; uncommitted work saved as a patch first | [Environments](#environments) |
+| `agent-team validate` / `schema export` | Check `canonical/` against the pydantic schemas; export JSON Schema | [Canonical files](#canonical-files) |
 
 ## Docs
 
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): target design, build order, decisions and what each step changed.
 - [docs/BOOTSTRAP.md](docs/BOOTSTRAP.md): day one on a new repository, from install to the first draft PR.
 - [docs/SECURITY.md](docs/SECURITY.md): what the tool protects and how; reporting a vulnerability.
 - [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md): assets, trust boundaries, attackers, threats and residual risk.
 - [docs/spec/](docs/spec/README.md): one reference page per canonical kind, generated from the JSON Schemas (`agent-team schema docs`).
-
-## Install
-
-```bash
-uv tool install git+https://github.com/SolomonSmith-dev/agentic-engineering-os
-agent-team --version
-```
-
-Pin to a tag: `uv tool install git+https://github.com/SolomonSmith-dev/agentic-engineering-os@0.1.0`.
 
 ## Doctor
 
