@@ -511,8 +511,8 @@ def _json_leaf_source(leaf: str) -> bool:
     return not _PLAIN_RANGE.match(value) or set(value.strip()) == {"."}
 
 
-_JS_SECTIONS = ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies",
-                "resolutions", "overrides", "pnpm.overrides")  # fmt: skip
+_JS_DIRECT_SECTIONS = ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies")
+_JS_SECTIONS = (*_JS_DIRECT_SECTIONS, "resolutions", "overrides", "pnpm.overrides")
 
 
 def _package_json_hits(root: Path, base: str, head: str, path: str) -> list[str]:
@@ -521,14 +521,14 @@ def _package_json_hits(root: Path, base: str, head: str, path: str) -> list[str]
         return _unparseable(path)
     b, h = pair
     hits = []
+    retained = {name for section in _JS_DIRECT_SECTIONS for name in _d(_dig(h, section))}
     for section in _JS_SECTIONS:
         for key, leaf in _changed(_dig(b, section), _dig(h, section)).items():
             if _json_leaf_source(leaf):
                 hits.append(f"{section}.{_name(key)} -> {json.loads(leaf)}")
         override = section in ("overrides", "resolutions", "pnpm.overrides")
-        retained = _d(_dig(h, section))
-        # A retained direct dependency can switch sources even when its new value
-        # is a plain range. Complete dependency removals remain benign. Removing
+        # A direct dependency retained in any section can switch sources even
+        # when its new value is a plain range. Complete removals remain benign. Removing
         # an override still restores the source of a retained transitive package.
         for key, leaf in _changed(_dig(h, section), _dig(b, section)).items():
             if _json_leaf_source(leaf) and (override or (key and key[0] in retained)):

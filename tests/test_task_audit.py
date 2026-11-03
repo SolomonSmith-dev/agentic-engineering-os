@@ -1132,3 +1132,27 @@ def test_direct_dependency_prior_source(git_repo: Path, section, old, new, expec
         assert any(f"{section}.internal-pkg" in f.evidence for f in found)
     else:
         assert found == []
+
+
+_DIRECT_DEP_SECTIONS = ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies")
+
+
+@pytest.mark.parametrize("old_section,new_section", [
+    (old, new) for old in _DIRECT_DEP_SECTIONS for new in _DIRECT_DEP_SECTIONS if old != new
+])
+@pytest.mark.parametrize("case", ["source-to-registry", "version-bump", "complete-removal"])
+def test_direct_dependency_retention_across_sections(git_repo: Path, old_section, new_section, case):
+    import json
+
+    old_value = "^1.0.0" if case == "version-bump" else "https://corp.example/internal-pkg.tgz"
+    before = {old_section: {"internal-pkg": old_value}}
+    after = {new_section: {"other-pkg": "^1.0.0"}}
+    if case != "complete-removal":
+        after[new_section]["internal-pkg"] = "^2.0.0"
+    dep_repo(git_repo, {"package.json": json.dumps(before)})
+    found = change(git_repo, {"package.json": json.dumps(after)})
+    if case == "source-to-registry":
+        assert found and all(f.rule == "dep-source" and f.where == "package.json" for f in found)
+        assert any(f"{old_section}.internal-pkg" in f.evidence for f in found)
+    else:
+        assert found == []
