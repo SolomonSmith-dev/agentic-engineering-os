@@ -525,12 +525,15 @@ def _package_json_hits(root: Path, base: str, head: str, path: str) -> list[str]
         for key, leaf in _changed(_dig(b, section), _dig(h, section)).items():
             if _json_leaf_source(leaf):
                 hits.append(f"{section}.{_name(key)} -> {json.loads(leaf)}")
-        if section in ("overrides", "resolutions", "pnpm.overrides"):
-            # Removing an override restores the original source of a retained
-            # transitive dependency; it is not ordinary dependency removal.
-            for key, leaf in _changed(_dig(h, section), _dig(b, section)).items():
-                if _json_leaf_source(leaf):
-                    hits.append(f"{section}.{_name(key)} source override removed or replaced")
+        override = section in ("overrides", "resolutions", "pnpm.overrides")
+        retained = _d(_dig(h, section))
+        # A retained direct dependency can switch sources even when its new value
+        # is a plain range. Complete dependency removals remain benign. Removing
+        # an override still restores the source of a retained transitive package.
+        for key, leaf in _changed(_dig(h, section), _dig(b, section)).items():
+            if _json_leaf_source(leaf) and (override or (key and key[0] in retained)):
+                source = "source override" if override else "prior source"
+                hits.append(f"{section}.{_name(key)} {source} removed or replaced")
     return hits
 
 

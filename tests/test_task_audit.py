@@ -1108,3 +1108,27 @@ def test_recursive_directory_alias_expansion_is_bounded(git_repo: Path):
     found = change(git_repo, {"vendor/prod.txt": "a @ https://evil/a.whl\n"})
     assert found and all(f.severity == "high" for f in found)
     assert any("requirements/prod.txt" in f.evidence for f in found)
+
+
+@pytest.mark.parametrize("section", ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"])
+@pytest.mark.parametrize("old,new,expected", [
+    ({"internal-pkg": "https://corp.example/internal-pkg.tgz"}, {"internal-pkg": "^1.0.0"}, True),
+    ({"internal-pkg": "^1.0.0"}, {"internal-pkg": "^2.0.0"}, False),
+    ({"internal-pkg": "https://corp.example/internal-pkg.tgz"}, {}, False),
+    ({"internal-pkg": "https://corp.example/internal-pkg.tgz"}, None, False),
+    ({"internal-pkg": "https://corp.example/internal-pkg.tgz"},
+     {"internal-pkg": "https://corp.example/internal-pkg.tgz"}, False),
+], ids=["source-to-registry", "version-bump", "dependency-removed", "section-removed", "source-unchanged"])
+def test_direct_dependency_prior_source(git_repo: Path, section, old, new, expected):
+    import json
+
+    dep_repo(git_repo, {"package.json": json.dumps({section: old, "description": "before"})})
+    after = {"description": "after"}
+    if new is not None:
+        after[section] = new
+    found = change(git_repo, {"package.json": json.dumps(after)})
+    if expected:
+        assert found and all(f.rule == "dep-source" and f.where == "package.json" for f in found)
+        assert any(f"{section}.internal-pkg" in f.evidence for f in found)
+    else:
+        assert found == []
