@@ -729,15 +729,42 @@ def _requirements_hits(root: Path, base: str, head: str, path: str) -> list[str]
 # A Gemfile is Ruby: git_source blocks, eval, splats and `;` can all change where gems come from, so a denylist of
 # source keywords is bypassable. Allowlist instead: a changed line passes only if it is blank, a comment, `end`, a
 # `group :a, :b do` opener, or a plain `gem "name"[, "constraint"...]`. Anything else, added or removed, is a hit.
-_GEM_CONSTRAINT_ONLY = re.compile(r"""^\s*gem\s+(["'])[A-Za-z0-9_.\-]+\1(?:\s*,\s*(["'])\s*[<>=~!]*\s*[0-9][A-Za-z0-9_.\-]*\2)*\s*(?:#.*)?$""")
-_GEM_GROUP = re.compile(r"^\s*group\s+:\w+(?:\s*,\s*:\w+)*\s+do\s*(?:#.*)?$")
+# A plain line is only context-free at top level or inside `group` blocks: a `gem` line inside `source "..." do`,
+# `git "..." do` and the like takes that source, and moving an `end` changes which gems are inside. So a file whose
+# base or head holds any other block opener, or unbalanced do/end, flags every non-blank, non-comment changed line.
+# Only ASCII spaces and tabs count as whitespace, and any non-ASCII character in a changed line is a hit.
+_GEM_CONSTRAINT_ONLY = re.compile(
+    r"""^[ \t]*gem[ \t]+(["'])[A-Za-z0-9_.\-]+\1(?:[ \t]*,[ \t]*(["'])[ \t]*[<>=~!]*[ \t]*[0-9][A-Za-z0-9_.\-]*\2)*[ \t]*(?:#.*)?$"""
+)
+_GEM_GROUP = re.compile(r"^[ \t]*group[ \t]+:\w+(?:[ \t]*,[ \t]*:\w+)*[ \t]+do[ \t]*(?:#.*)?$")
+_BLOCK_OPEN = re.compile(r"(?:\bdo(?:[ \t]*\|[^|]*\|)?|\{(?:[ \t]*\|[^|]*\|)?)[ \t]*(?:#.*)?$|^[ \t]*(?:if|unless|case|begin|while|until|for|def|class|module)\b")
 
 
 def _gemfile_line_ok(line: str) -> bool:
-    stripped = line.strip()
+    if not line.isascii():
+        return False
+    stripped = line.strip(" \t")
     if not stripped or stripped.startswith("#") or stripped == "end":
         return True
     return bool(_GEM_CONSTRAINT_ONLY.match(line) or _GEM_GROUP.match(line))
+
+
+def _gemfile_is_simple(text: str) -> bool:
+    """Only top-level lines and balanced `group ... do` blocks; any other block opener or unbalanced end is not simple."""
+    depth = 0
+    for line in text.split("\n"):
+        stripped = line.strip(" \t")
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped == "end":
+            depth -= 1
+            if depth < 0:
+                return False
+        elif _GEM_GROUP.match(line):
+            depth += 1
+        elif _BLOCK_OPEN.search(line):
+            return False
+    return depth == 0
 
 
 def _gemfile_hits(root: Path, base: str, head: str, path: str) -> list[str]:
@@ -747,8 +774,17 @@ def _gemfile_hits(root: Path, base: str, head: str, path: str) -> list[str]:
     if _SEPARATORS.search(text):
         return [f"{path} has a line separator other than \\n; Ruby would split its lines differently"]
     added, removed = _diff_lines(root, base, head, path)
-    hits = [line for _, line in added if not _gemfile_line_ok(line)]
-    hits += [f"removed: {line}" for line in removed if not _gemfile_line_ok(line)]
+    base_text = _show(root, base, path)
+    simple = _gemfile_is_simple(text) and (base_text is None or _gemfile_is_simple(base_text))
+
+    def bad(line: str) -> bool:
+        if simple:
+            return not _gemfile_line_ok(line)
+        stripped = line.strip(" \t")
+        return bool(stripped) and not stripped.startswith("#")
+
+    hits = [line for _, line in added if bad(line)]
+    hits += [f"removed: {line}" for line in removed if bad(line)]
     return [h.strip() for h in dict.fromkeys(hits)]
 
 

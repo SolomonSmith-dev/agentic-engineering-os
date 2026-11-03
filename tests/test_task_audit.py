@@ -457,6 +457,25 @@ def test_gemfile_is_an_allowlist_not_a_keyword_denylist(git_repo: Path):
     assert found and set(rules(found)) == {"dep-source"}
 
 
+def test_gemfile_plain_lines_inside_a_custom_source_block_are_flagged(git_repo: Path):
+    head_open = 'source "https://gems.example" do\n  gem "internal", "~> 1.0"\n'
+    dep_repo(git_repo, {"Gemfile": GEMFILE + "\n" + head_open + "end\n"})
+    # a plain gem line added inside the block takes the block's source
+    found = change(git_repo, {"Gemfile": GEMFILE + "\n" + head_open + '  gem "extra"\nend\n'})
+    assert found and set(rules(found)) == {"dep-source"}
+    git(git_repo, "reset", "-q", "--hard", "HEAD~1")
+    # moving only `end` changes which gems are inside the block
+    dep_repo(git_repo, {"Gemfile": GEMFILE + "\n" + head_open + 'end\ngem "other"\n'})
+    found = change(git_repo, {"Gemfile": GEMFILE + "\n" + head_open + 'gem "other"\nend\n'})
+    assert found and set(rules(found)) == {"dep-source"}
+
+
+def test_gemfile_non_ascii_whitespace_is_flagged(git_repo: Path):
+    dep_repo(git_repo, {"Gemfile": GEMFILE})
+    found = change(git_repo, {"Gemfile": GEMFILE + 'gem\u00a0"foo"\n'})
+    assert found and set(rules(found)) == {"dep-source"}
+
+
 def test_go_mod_replace_directives(git_repo: Path):
     base = "module x\n\ngo 1.22\n\nrequire a v1.0.0\n"
     dep_repo(git_repo, {"go.mod": base})
