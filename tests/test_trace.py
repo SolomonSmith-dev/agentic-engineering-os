@@ -137,3 +137,23 @@ def test_seeding_never_lowers_what_the_meter_already_holds() -> None:
     m = BudgetMeter(LIMITS, {"m": PRICE}, spent_tokens=50, spent_usd=2.0, elapsed_s=30)
     m.seed(tokens=10, usd=5.0, elapsed_s=10, unknown=())
     assert (m.tokens, m.usd) == (50, 5.0) and m.elapsed_s() >= 30
+
+
+def test_resume_boundary_precedes_reentry_transitions(repo):
+    script = happy()
+    script["IMPLEMENTATION"] = [KeyboardInterrupt(), ok(diff="+fix", claimed_changes=[])]
+    with pytest.raises(KeyboardInterrupt):
+        run_workflow(repo, CANONICAL, "bug-fix", "Fix it.", executor_factory=factory_for(FakeExecutor(script)), echo=lambda _: None)
+    with RunStore.open(repo, create=False) as store:
+        [run] = store.list_runs()
+    before = len(read_trace(trace_path(repo, run.run_id)))
+    resume_workflow(repo, CANONICAL, run.run_id, executor_factory=factory_for(FakeExecutor(script)), echo=lambda _: None)
+    events = read_trace(trace_path(repo, run.run_id))[before:]
+    assert events[0]["event"] == "run_resumed"
+
+
+def test_unfinished_model_call_is_unknown_after_process_crash():
+    events = [{"event": "model_call_started", "call_id": "child-1", "runtime": "codex"}]
+    assert trace_unknown(events)
+    events.append({"event": "model_call_ended", "call_id": "child-1"})
+    assert trace_unknown(events) == []

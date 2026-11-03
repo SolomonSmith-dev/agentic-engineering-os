@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 from test_claude_adapter import install_fake_claude
-from test_codex_adapter import repo  # noqa: F401  (fixture is used by name)
+from test_codex_adapter import fake_codex, repo, srt  # noqa: F401  (fixture is used by name)
 
 from agent_team.environments import acquire, read_lock
 from agent_team.run_agent import (
@@ -91,3 +91,34 @@ def test_every_canonical_agent_names_a_known_state() -> None:
     for doc in canonical.docs:
         if doc.kind == "agent":
             assert agent_state(doc.spec.triggers) is not None, doc.spec.name
+
+
+@pytest.mark.parametrize("runtime", ["claude", "codex"])
+def test_interrupted_model_call_records_unknown_spend(repo, tmp_path, monkeypatch, fake_codex, srt, runtime):
+    import importlib
+    from agent_team.budget import BudgetMeter, Limits
+    from agent_team.runs.trace import open_trace, read_trace, trace_unknown
+    module = importlib.import_module("agent_team.run_agent")
+    trace = open_trace(repo, "workflow")
+    meter = BudgetMeter(Limits(tokens=10000, minutes=10, usd=1), {})
+    meter.trace = trace
+    seen = []
+
+    def interrupt(*args, **kwargs):
+        # Model runtime boundary only; real Git, sandbox setup, SQLite and trace.
+        seen.extend(read_trace(trace.path))
+        raise KeyboardInterrupt
+
+    if runtime == "claude":
+        binary = install_fake_claude(tmp_path)
+        monkeypatch.setattr(module, "execute", interrupt)
+        options = {"claude": str(binary)}
+    else:
+        binary = fake_codex("ok")
+        monkeypatch.setattr(module.codex_adapter, "execute", interrupt)
+        options = {"codex": str(binary)}
+    with pytest.raises(KeyboardInterrupt):
+        call(repo, runtime=runtime, meter=meter, trace=trace, **options)
+    assert any(e["event"] == "model_call_started" for e in seen)
+    assert meter.unknown and meter.check() is not None
+    assert any("interrupted" in reason for reason in trace_unknown(read_trace(trace.path)))

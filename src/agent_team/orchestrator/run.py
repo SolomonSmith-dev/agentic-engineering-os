@@ -137,11 +137,11 @@ def resume_workflow(
                 meter.seed(tokens=trace_tokens(events), usd=trace_usd(events), elapsed_s=trace_elapsed_s(events),
                            unknown=trace_unknown(events))  # fmt: skip
                 meter.trace = trace
-            reenter(store, dag, run_id, echo=echo, note=note, trace=trace)
             trace.emit("run_resumed", run=run_id, budget=meter.limits.as_dict() if meter else None,
                        spent_tokens=meter.tokens if meter else None, spent_usd=meter.usd if meter else None,
                        spent_minutes=meter.elapsed_s() / 60 if meter else None,
                        spend_unknown=bool(meter.unknown) if meter else None)  # fmt: skip
+            reenter(store, dag, run_id, echo=echo, note=note, trace=trace)
             return _ended(walk(store, dag, executor, run_id, echo=echo, trace=trace), trace)
         finally:
             release(state_dir, run_id)

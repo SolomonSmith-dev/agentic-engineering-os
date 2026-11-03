@@ -84,8 +84,19 @@ def trace_tokens(events: Iterable[Mapping[str, Any]]) -> int:
 
 
 def trace_unknown(events: Iterable[Mapping[str, Any]]) -> list[str]:
-    """Why spend is not fully known: one entry per `usage_unknown` line."""
-    return [str(e.get("detail") or "usage unknown") for e in events if e.get("event") == "usage_unknown"]
+    """Explicit unknown usage and calls interrupted before final accounting."""
+    unknown: list[str] = []
+    pending: set[str] = set()
+    for event in events:
+        kind = event.get("event")
+        if kind == "usage_unknown":
+            unknown.append(str(event.get("detail") or "usage unknown"))
+        elif kind == "model_call_started":
+            pending.add(str(event.get("call_id")))
+        elif kind == "model_call_ended":
+            pending.discard(str(event.get("call_id")))
+    unknown.extend(f"model call {call_id} interrupted before final usage" for call_id in sorted(pending))
+    return unknown
 
 
 def _at(event: Mapping[str, Any]) -> datetime | None:

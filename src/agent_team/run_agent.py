@@ -265,6 +265,7 @@ def run_agent(
             output_model = next((OUTPUT_SCHEMAS[o] for o in agent.outputs if o in OUTPUT_SCHEMAS), None)
             stderr_path = environment.sandbox.tmp_dir / "claude.stderr"
             watch = StreamWatch(meter, "claude", resolved.model) if meter is not None else None
+            _call_started(watch, run_id)
             try:
                 result, parser = execute(
                     invocation,
@@ -276,6 +277,9 @@ def run_agent(
                     redaction=redaction,
                     watch=watch,
                 )
+            except BaseException:
+                _call_interrupted(watch, run_id)
+                raise
             finally:
                 stderr_path.unlink(missing_ok=True)  # only the redacted tail is kept, in the result
             if watch is not None:
@@ -311,6 +315,17 @@ def codex_reported(parser: codex_adapter.StreamParser) -> Usage | None:
     return turn_usage({"type": "turn.completed", "usage": parser.usage}) or Usage()
 
 
+def _call_started(watch: StreamWatch | None, run_id: str) -> None:
+    if watch is not None:
+        watch.meter._emit("model_call_started", call_id=run_id, runtime=watch.runtime)
+
+
+def _call_interrupted(watch: StreamWatch | None, run_id: str) -> None:
+    if watch is not None:
+        watch.meter.mark_unknown(f"{watch.runtime} call interrupted before final usage", source=watch.runtime)
+        watch.meter._emit("model_call_ended", call_id=run_id)
+
+
 def _metered(store: RunStore, run_id: str, watch: StreamWatch, result: AdapterResult, reported: Usage | None) -> AdapterResult:
     """Fold the call's final usage report into the meter, then cost the call at list price.
 
@@ -326,6 +341,7 @@ def _metered(store: RunStore, run_id: str, watch: StreamWatch, result: AdapterRe
         # The call finished, but the report showed the limit was crossed: the run still halts.
         result = result.model_copy(update={"status": "budget_exceeded", "reason": watch.meter.halted.reason()})
     store.add_cost(run_id, 0.0, tokens=watch.tokens)
+    watch.meter._emit("model_call_ended", call_id=run_id)
     return result.model_copy(update={"cost_usd": watch.usd, "usage_known": watch.usage_known})
 
 
@@ -403,6 +419,7 @@ def _run_codex(
     )
     output_model = next((OUTPUT_SCHEMAS[o] for o in agent.outputs if o in OUTPUT_SCHEMAS), None)
     stderr_path = environment.sandbox.tmp_dir / "codex.stderr"
+    _call_started(watch, run_id)
     try:
         result, parser = codex_adapter.execute(
             invocation,
@@ -416,6 +433,9 @@ def _run_codex(
             redaction=redaction,
             watch=watch,
         )
+    except BaseException:
+        _call_interrupted(watch, run_id)
+        raise
     finally:
         stderr_path.unlink(missing_ok=True)  # only the redacted tail is kept, in the result
     if watch is not None:
