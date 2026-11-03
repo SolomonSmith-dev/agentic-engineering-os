@@ -28,6 +28,7 @@ and hook keep `.agent-team/` unreadable.
 
 import json
 import os
+import subprocess
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -558,6 +559,13 @@ class DefaultExecutor:
 
     def _pr(self, given: NodeInput) -> NodeResult:
         """Open the draft PR on the run branch, or end at HUMAN_DECISION with the branch kept and the reason."""
+        stopped = self._halted()
+        if stopped is not None:
+            return stopped
+
+        def timeout() -> float:
+            return min(pr_mod.GH_TIMEOUT_S, self.meter.remaining_s()) if self.meter is not None else pr_mod.GH_TIMEOUT_S
+
         inputs = given.inputs
         diff, tests, review = (inputs.get(k) if isinstance(inputs.get(k), Mapping) else {} for k in ("diff", "test_output", "review"))
         head = str(diff.get("head") or "")
@@ -625,40 +633,75 @@ class DefaultExecutor:
         ref = write_artifact(self.root, given.run_id, "pr-body.md", pr_mod.body(body_inputs, self.redaction))
         if self.gh is None:
             return no_pr("gh is not on PATH; install the GitHub CLI, or push the branch and open the draft yourself")
-        if not pr_mod.gh_authenticated(self.gh, self.root):
-            return no_pr("gh is not authenticated; run 'gh auth login', or push the branch and open the draft yourself")
-        if not pr_mod.has_remote(self.root):
-            return no_pr(f"the repository has no '{pr_mod.REMOTE}' remote to push to")
+        for helper, reason in (
+            (lambda: pr_mod.gh_authenticated(self.gh, self.root, timeout_s=timeout()),
+             "gh is not authenticated; run 'gh auth login', or push the branch and open the draft yourself"),
+            (lambda: pr_mod.has_remote(self.root, timeout_s=timeout()),
+             f"the repository has no '{pr_mod.REMOTE}' remote to push to"),
+        ):
+            stopped = self._halted()
+            if stopped is not None:
+                return stopped
+            try:
+                ok = helper()
+            except (pr_mod.PrError, OSError, subprocess.TimeoutExpired) as exc:
+                return self._halted() or no_pr(str(exc))
+            stopped = self._halted()
+            if stopped is not None:
+                return stopped
+            if not ok:
+                return no_pr(reason)
         if ledger is not None:
             # An earlier attempt got as far as the push or gh pr create: never open a second PR.
+            stopped = self._halted()
+            if stopped is not None:
+                return stopped
             try:
-                existing = pr_mod.find_existing(self.gh, self.root, branch, self.redaction)
-            except (pr_mod.PrError, OSError) as exc:
+                existing = pr_mod.find_existing(self.gh, self.root, branch, self.redaction, timeout_s=timeout())
+            except (pr_mod.PrError, OSError, subprocess.TimeoutExpired) as exc:
+                stopped = self._halted()
+                if stopped is not None:
+                    return stopped
                 return no_pr(f"an earlier attempt may already have opened a PR for {branch}, and gh could not say: {exc}",
                              pushed=bool(ledger.get("pushed")))  # fmt: skip
             if existing is not None:
                 if existing.get("headRefOid") != head:  # an unknown head is a mismatch, not a match
+                    stopped = self._halted()
+                    if stopped is not None:
+                        return stopped
                     return no_pr(f"PR {existing.get('url')} for {branch} is at {short(existing.get('headRefOid'))}, "
                                  f"not this diff's {short(head)}; a human must decide", pushed=True)  # fmt: skip
                 opened = {"status": "opened", "url": str(existing.get("url")), "branch": branch, "head": head,
                           "draft": bool(existing.get("isDraft", True)), "blocked": given.escalated, "body": ref}  # fmt: skip
                 self._write_pr_ledger(given.run_id, opened)
-                return recovered(opened, "gh pr list")
+                return self._halted() or recovered(opened, "gh pr list")
+        stopped = self._halted()
+        if stopped is not None:
+            return stopped
         attempt = {"status": "attempting", "branch": branch, "head": head, "pushed": False, "body": ref}
         self._write_pr_ledger(given.run_id, attempt)
+        stopped = self._halted()
+        if stopped is not None:
+            return stopped
         try:
-            pr_mod.push(self.root, head, branch, self.redaction)
-        except (pr_mod.PrError, OSError) as exc:
-            return no_pr(str(exc))
+            pr_mod.push(self.root, head, branch, self.redaction, timeout_s=timeout())
+        except (pr_mod.PrError, OSError, subprocess.TimeoutExpired) as exc:
+            return self._halted() or no_pr(str(exc))
         self._write_pr_ledger(given.run_id, {**attempt, "pushed": True})
+        stopped = self._halted()
+        if stopped is not None:
+            return stopped
         try:
             url = pr_mod.create(self._gh_argv(), self.root, branch, pr_mod.title(given.task, given.escalated),
-                                self.root / ref["path"], self.redaction)  # fmt: skip
-        except (pr_mod.PrError, OSError) as exc:
-            return no_pr(str(exc), pushed=True)
+                                self.root / ref["path"], self.redaction, timeout_s=timeout())  # fmt: skip
+        except (pr_mod.PrError, OSError, subprocess.TimeoutExpired) as exc:
+            return self._halted() or no_pr(str(exc), pushed=True)
         opened = {"status": "opened", "url": url, "branch": branch, "head": head, "draft": True,
                   "blocked": given.escalated, "body": ref}  # fmt: skip
         self._write_pr_ledger(given.run_id, opened)
+        stopped = self._halted()
+        if stopped is not None:
+            return stopped
         return NodeResult(
             evidence={"pr": opened},
             note=f"draft PR {url} on {branch} at {short(head)}" + (", marked blocked" if given.escalated else ""),

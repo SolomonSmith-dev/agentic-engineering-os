@@ -153,33 +153,38 @@ def gh_env() -> dict[str, str]:
     return {**os.environ, "GH_PROMPT_DISABLED": "1", "NO_COLOR": "1"}
 
 
-def gh_authenticated(gh: str, root: Path) -> bool:
+def gh_authenticated(gh: str, root: Path, *, timeout_s: float = GH_TIMEOUT_S) -> bool:
     proc = subprocess.run([gh, "auth", "status"], cwd=root, env=gh_env(), capture_output=True, text=True,
-                          timeout=GH_TIMEOUT_S, check=False)  # fmt: skip
+                          timeout=timeout_s, check=False)  # fmt: skip
     return proc.returncode == 0  # its output names the account; it is never read or stored
 
 
-def has_remote(root: Path) -> bool:
-    return subprocess.run(["git", "-C", str(root), "remote", "get-url", REMOTE], capture_output=True, check=False).returncode == 0
+def has_remote(root: Path, *, timeout_s: float = GH_TIMEOUT_S) -> bool:
+    proc = subprocess.run(["git", "-C", str(root), "remote", "get-url", REMOTE],
+                          capture_output=True, timeout=timeout_s, check=False)  # fmt: skip
+    return proc.returncode == 0
 
 
-def push(root: Path, head: str, branch: str, redaction: Sequence[str] = ()) -> None:
+def push(root: Path, head: str, branch: str, redaction: Sequence[str] = (), *, timeout_s: float = GH_TIMEOUT_S) -> None:
     """Push exactly `head` to the run branch on origin. No force: a branch that moved elsewhere refuses."""
     if not branch.startswith("agent-team/") or head.startswith("+"):
         raise PrError(f"refusing to push {head} to {branch}: only the run's agent-team/ branch is pushed")
     proc = subprocess.run(
         ["git", "-C", str(root), *SAFE_GIT, "push", "--no-verify", "--porcelain", REMOTE, f"{head}:refs/heads/{branch}"],
-        capture_output=True, text=True, timeout=GH_TIMEOUT_S, check=False,
+        capture_output=True, text=True, timeout=timeout_s, check=False,
     )  # fmt: skip
     if proc.returncode != 0:
         raise _fail(f"git push {REMOTE} {branch}", proc, redaction)
 
 
-def create(gh_argv: Sequence[str], root: Path, branch: str, pr_title: str, body_file: Path, redaction: Sequence[str] = ()) -> str:
+def create(
+    gh_argv: Sequence[str], root: Path, branch: str, pr_title: str, body_file: Path,
+    redaction: Sequence[str] = (), *, timeout_s: float = GH_TIMEOUT_S,
+) -> str:
     """`gh pr create --draft` for the run branch; returns the PR URL gh prints."""
     proc = subprocess.run(
         [*gh_argv, "--head", branch, "--title", pr_title, "--body-file", str(body_file)],
-        cwd=root, env=gh_env(), capture_output=True, text=True, timeout=GH_TIMEOUT_S, check=False,
+        cwd=root, env=gh_env(), capture_output=True, text=True, timeout=timeout_s, check=False,
     )  # fmt: skip
     if proc.returncode != 0:
         raise _fail("gh pr create", proc, redaction)
@@ -190,7 +195,9 @@ def create(gh_argv: Sequence[str], root: Path, branch: str, pr_title: str, body_
 PR_FIELDS = "url,number,isDraft,headRefOid,state,headRepositoryOwner,isCrossRepository"
 
 
-def find_existing(gh: str, root: Path, branch: str, redaction: Sequence[str] = ()) -> dict[str, Any] | None:
+def find_existing(
+    gh: str, root: Path, branch: str, redaction: Sequence[str] = (), *, timeout_s: float = GH_TIMEOUT_S,
+) -> dict[str, Any] | None:
     """The one OPEN PR whose head is the run branch in the base repository, or None.
 
     Closed and merged PRs are not candidates, nor is a fork's branch of the same name
@@ -199,7 +206,7 @@ def find_existing(gh: str, root: Path, branch: str, redaction: Sequence[str] = (
     """
     proc = subprocess.run(
         [gh, "pr", "list", "--head", branch, "--state", "open", "--json", PR_FIELDS, "--limit", "10"],
-        cwd=root, env=gh_env(), capture_output=True, text=True, timeout=GH_TIMEOUT_S, check=False,
+        cwd=root, env=gh_env(), capture_output=True, text=True, timeout=timeout_s, check=False,
     )  # fmt: skip
     if proc.returncode != 0:
         raise _fail("gh pr list", proc, redaction)
