@@ -7,9 +7,14 @@ adapter passes that model's JSON Schema to the runtime. Registered so far: the
 reviewer's verdict (step 6) and the archaeologist's repository memory (step 9).
 """
 
+from collections.abc import Callable, Mapping
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+# Called by an adapter with every parsed stream event; a returned string is a halt reason,
+# and the adapter kills the worker's process group and reports budget_exceeded with it.
+Watch = Callable[[Mapping[str, Any]], str | None]
 
 AdapterStatus = Literal["succeeded", "failed", "budget_exceeded", "max_turns", "timeout", "error"]
 
@@ -33,6 +38,10 @@ class AdapterResult(BaseModel):
     tool_calls: int = Field(default=0, ge=0)
     permission_denials: list[str] = Field(default_factory=list, description="Tool names the runtime denied.")
     usage: dict[str, int] | None = Field(default=None, description="Token counts as the runtime reports them.")
+    usage_known: bool = Field(
+        default=True,
+        description="False when the runtime never reported the call's final usage (killed mid-turn): cost_usd is then a lower bound.",
+    )
     exit_code: int | None = None
     stderr_tail: str | None = Field(default=None, description="Redacted end of stderr when the run failed.")
 

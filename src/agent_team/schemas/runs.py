@@ -11,6 +11,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
+from agent_team.schemas.task_file import BudgetLimit
+
 # The full state vocabulary from section 5 of the architecture doc: 13 workflow
 # states plus the four failure and recovery edges. Most runs visit six to nine.
 RunState = Literal[
@@ -34,7 +36,8 @@ RunState = Literal[
 ]
 
 # Set when a run ends; a run with no outcome is still running or was interrupted.
-RunOutcome = Literal["succeeded", "failed", "blocked", "abandoned"]
+# halted_budget (engine M3): a task-file run stopped on a token, wall-clock or dollar limit.
+RunOutcome = Literal["succeeded", "failed", "blocked", "abandoned", "halted_budget"]
 
 ToolResultStatus = Literal["ok", "error", "denied", "timeout"]
 
@@ -57,6 +60,8 @@ class RunRecord(RunModel):
     last_event_at: datetime
     outcome: RunOutcome | None = None
     cost_usd: float = Field(ge=0)
+    tokens_total: int = Field(default=0, ge=0, description="Metered input + output tokens (task-file runs).")
+    halted: BudgetLimit | None = Field(default=None, description="The budget limit that halted the run.")
 
     @property
     def elapsed_s(self) -> float:

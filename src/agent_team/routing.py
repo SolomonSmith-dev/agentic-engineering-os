@@ -12,7 +12,7 @@ from pathlib import Path
 import yaml
 from pydantic import ValidationError
 
-from agent_team.schemas.registry import RegistrySpec
+from agent_team.schemas.registry import ModelCost, RegistrySpec
 
 REGISTRY_PATH = Path("routing") / "registry.yaml"
 
@@ -56,6 +56,15 @@ def load_registry(path: Path) -> RegistrySpec:
         first = exc.errors()[0]
         field = ".".join(str(p) for p in first["loc"]) or "<root>"
         raise RegistryError(f"model registry {path} is invalid: {field}: {first['msg']}") from exc
+
+
+def price_of(registry: RegistrySpec, model: str) -> ModelCost:
+    """The model's full list price (input, output, cache read, cache write). Fails closed: no price, no run."""
+    entry = registry.models.get(model)
+    cost = entry.cost if entry is not None else None
+    if cost is None or cost.cache_read_per_mtok_usd is None or cost.cache_write_per_mtok_usd is None:
+        raise RegistryError(f"model {model!r} has no verified list price in the registry; a task-file run refuses unpriced models")
+    return cost
 
 
 def resolve_model(

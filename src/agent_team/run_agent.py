@@ -30,9 +30,10 @@ from typing import get_args
 
 from agent_team.adapters import codex as codex_adapter
 from agent_team.adapters.claude.compile import compile_agent
-from agent_team.adapters.claude.invoke import RUNTIME, build_invocation, check_version, execute, record
+from agent_team.adapters.claude.invoke import RUNTIME, StreamParser, build_invocation, check_version, execute, record
 from agent_team.adapters.codex.invoke import API_DOMAINS
 from agent_team.adapters.codex.invoke import auth_mode as codex_auth_mode
+from agent_team.budget import BudgetMeter, StreamWatch, Usage, claude_usage, turn_usage
 from agent_team.canonical import Document, validate_tree
 from agent_team.environments import acquire, create, effective_ceiling, release, srt_path
 from agent_team.environments.sandbox import extend_settings
@@ -42,6 +43,7 @@ from agent_team.lessons import for_prompt, render_prompt_section
 from agent_team.routing import RegistryError, default_registry_path, load_registry, resolve_model
 from agent_team.runs.render import status_line
 from agent_team.runs.store import STATE_DIR, RunStore, repo_root
+from agent_team.runs.trace import Trace
 from agent_team.schemas.adapter import OUTPUT_SCHEMAS, AdapterResult
 from agent_team.schemas.agent import AgentSpec
 from agent_team.schemas.common import AUTONOMY_ORDER, Autonomy
@@ -127,6 +129,9 @@ def run_agent(
     after: AfterAgent | None = None,
     focus: bool = True,
     echo: Callable[[str], None] = print,
+    model_class: str | None = None,
+    meter: BudgetMeter | None = None,
+    trace: Trace | None = None,
 ) -> tuple[RunRecord, AdapterResult]:
     """Run one agent against `repo` and return its run record and normalized result.
 
@@ -134,6 +139,12 @@ def run_agent(
     overrides it with another registry entry on that runtime. `environment` reuses an
     allocated worktree instead of creating one (the caller owns it), `base_commit` is the
     commit a new worktree starts from, and `state` overrides the agent's first state trigger.
+
+    `model_class` replaces the agent's own class (a task file's `models` override). With a
+    `meter` (task-file runs) the call's dollar stop and timeout are capped at what is left of
+    the budget, every usage event is metered as it streams, the worker is killed once a limit
+    is crossed, and the call's cost is the meter's list price. `trace` receives a `tool_call`
+    line per recorded tool call.
     """
     canonical = load_canonical(canonical_dir)
     agent_doc = canonical.one("agent", agent_name)
@@ -145,7 +156,7 @@ def run_agent(
         registry = load_registry(registry_path or default_registry_path(canonical_dir))
         resolved = resolve_model(
             registry,
-            agent.model_class,
+            model_class or agent.model_class,
             runtime=runtime,
             allowed_privacy=policy.allowed_privacy_classes,
             override=model,
@@ -174,7 +185,7 @@ def run_agent(
     store = RunStore.open(root, redaction_patterns=redaction)
     assert store is not None
     with store:
-        run = store.start_run(f"agent:{agent.name}", model_class=agent.model_class)
+        run = store.start_run(f"agent:{agent.name}", model_class=model_class or agent.model_class)
         run_id = run.run_id
         echo(f"run {run_id}")
         echo(status_line(store.transitions(run_id)[-1]))
@@ -194,6 +205,13 @@ def run_agent(
                 environment = replace(environment, autonomy_ceiling=effective_ceiling(ceiling, environment.sandbox.sandboxed))
                 store.set_worktree_path(run_id, str(environment.path))
             work_state = state or agent_state(agent.triggers) or "IMPLEMENTATION"
+            if meter is not None:
+                max_budget_usd = meter.call_budget_usd(max_budget_usd)
+                timeout_s = meter.call_timeout_s(timeout_s)
+                if meter.halted is not None or max_budget_usd <= 0:
+                    # Never start a call the budget cannot bound (the executor checks first; this is the backstop).
+                    reason = meter.halted.reason() if meter.halted is not None else "no per-call dollar budget is left"
+                    raise RunAgentError(reason)
             if runtime == "codex":
                 result = _run_codex(
                     store, run_id, root, state_dir, environment, agent, agent_doc.body, skills, policy,
@@ -202,7 +220,9 @@ def run_agent(
                     + ([f"took over a stale lock from run {replaced.run_id} (pid {replaced.pid})"] if replaced else []),
                     codex=codex, prompt=prompt, max_budget_usd=max_budget_usd, timeout_s=timeout_s,
                     test_commands=test_commands, redaction=redaction, state=work_state, echo=echo,
+                    watch=StreamWatch(meter, "codex", resolved.model) if meter is not None else None,
                 )  # fmt: skip
+                _trace_calls(store, run_id, trace)
                 if after is not None and result.status == "succeeded":
                     after(AgentRun(store, run_id, root, environment, policy, result))
                 _finish(store, run_id, result, echo)
@@ -244,6 +264,8 @@ def run_agent(
             )
             output_model = next((OUTPUT_SCHEMAS[o] for o in agent.outputs if o in OUTPUT_SCHEMAS), None)
             stderr_path = environment.sandbox.tmp_dir / "claude.stderr"
+            watch = StreamWatch(meter, "claude", resolved.model) if meter is not None else None
+            _call_started(watch, run_id)
             try:
                 result, parser = execute(
                     invocation,
@@ -253,10 +275,17 @@ def run_agent(
                     timeout_s=timeout_s,
                     output_model=output_model,
                     redaction=redaction,
+                    watch=watch,
                 )
+            except BaseException:
+                _call_interrupted(watch, run_id)
+                raise
             finally:
                 stderr_path.unlink(missing_ok=True)  # only the redacted tail is kept, in the result
+            if watch is not None:
+                result = _metered(store, run_id, watch, result, claude_reported(parser))
             record(store, run_id, parser, result)
+            _trace_calls(store, run_id, trace)
             if after is not None and result.status == "succeeded":
                 after(AgentRun(store, run_id, root, environment, policy, result))
             _finish(store, run_id, result, echo)
@@ -268,6 +297,60 @@ def run_agent(
         finally:
             release(state_dir, run_id)
         return store.get_run(run_id), result
+
+
+def claude_reported(parser: StreamParser) -> Usage | None:
+    """The Claude call's final usage report, or None when there was none (no `result` event)."""
+    usage = parser.result.get("usage") if parser.result is not None else None
+    return claude_usage(usage) if isinstance(usage, dict) else None
+
+
+def codex_reported(parser: codex_adapter.StreamParser) -> Usage | None:
+    """The Codex call's usage, or None when its turn never completed (killed or failed mid-turn).
+
+    turn.completed usage is what the stream already metered; the parser's sum is the same events.
+    """
+    if parser.terminal != "turn.completed":
+        return None
+    return turn_usage({"type": "turn.completed", "usage": parser.usage}) or Usage()
+
+
+def _call_started(watch: StreamWatch | None, run_id: str) -> None:
+    if watch is not None:
+        watch.meter._emit("model_call_started", call_id=run_id, runtime=watch.runtime)
+
+
+def _call_interrupted(watch: StreamWatch | None, run_id: str) -> None:
+    if watch is not None:
+        watch.meter.mark_unknown(f"{watch.runtime} call interrupted before final usage", source=watch.runtime)
+        watch.meter._emit("model_call_ended", call_id=run_id)
+
+
+def _metered(store: RunStore, run_id: str, watch: StreamWatch, result: AdapterResult, reported: Usage | None) -> AdapterResult:
+    """Fold the call's final usage report into the meter, then cost the call at list price.
+
+    The streamed events are what can stop a worker mid-call; the final report catches any
+    usage the stream did not carry, so a quiet stream is still counted (fail closed). No
+    report at all (`reported` None) records the call's usage as unknown and halts the run.
+    """
+    watch.reconcile(reported, source=f"{watch.runtime}:final-report")
+    if result.status == "budget_exceeded" and watch.meter.halted is None:
+        # The runtime's own per-call stop (set to what was left of the budget) fired first.
+        watch.meter.stop("usd", f"the {watch.runtime} runtime stopped the call at its per-call budget")
+    if watch.meter.halted is not None and result.status == "succeeded":
+        # The call finished, but the report showed the limit was crossed: the run still halts.
+        result = result.model_copy(update={"status": "budget_exceeded", "reason": watch.meter.halted.reason()})
+    store.add_cost(run_id, 0.0, tokens=watch.tokens)
+    watch.meter._emit("model_call_ended", call_id=run_id)
+    return result.model_copy(update={"cost_usd": watch.usd, "usage_known": watch.usage_known})
+
+
+def _trace_calls(store: RunStore, run_id: str, trace: Trace | None) -> None:
+    if trace is None:
+        return
+    for call in store.tool_calls(run_id):
+        trace.emit("tool_call", run=run_id, state=call.state, tool=call.tool_name, status=call.result_status,
+                   duration_ms=call.duration_ms, args=call.args_summary)  # fmt: skip
 
 
 def _finish(store: RunStore, run_id: str, result: AdapterResult, echo: Callable[[str], None]) -> None:
@@ -301,6 +384,7 @@ def _run_codex(
     redaction: tuple[str, ...],
     state: RunState,
     echo: Callable[[str], None],
+    watch: StreamWatch | None = None,
 ) -> AdapterResult:
     """Compile for Codex, narrow the sandbox, run `codex exec --json` and record what it did."""
     assert codex is not None
@@ -335,6 +419,7 @@ def _run_codex(
     )
     output_model = next((OUTPUT_SCHEMAS[o] for o in agent.outputs if o in OUTPUT_SCHEMAS), None)
     stderr_path = environment.sandbox.tmp_dir / "codex.stderr"
+    _call_started(watch, run_id)
     try:
         result, parser = codex_adapter.execute(
             invocation,
@@ -344,10 +429,17 @@ def _run_codex(
             timeout_s=timeout_s,
             output_model=output_model,
             price=price,
-            max_budget_usd=max_budget_usd,
+            # The meter prices cached input separately; the adapter legacy estimate does not.
+            max_budget_usd=max_budget_usd if watch is None else None,
             redaction=redaction,
+            watch=watch,
         )
+    except BaseException:
+        _call_interrupted(watch, run_id)
+        raise
     finally:
         stderr_path.unlink(missing_ok=True)  # only the redacted tail is kept, in the result
+    if watch is not None:
+        result = _metered(store, run_id, watch, result, codex_reported(parser))
     codex_adapter.record(store, run_id, parser, result)
     return result

@@ -14,7 +14,12 @@ The agent's output is a claim; the evidence comes from the orchestrator:
     IMPLEMENTATION   diff (cut from the branch after settling it), claimed_changes (the agent's, checked against the diff)
     TEST             the reproduction, test, lint and type-check commands, run in the sandbox at the diff's head
     CODE_REVIEW      the verdict, normalized (a blocker or major finding never approves), saved as a file
-    PR               push + gh pr create --draft, behind github.pr.create (pr.py)
+    PR               push + gh pr create --draft, behind github.pr.create (pr.py); a PR ledger artifact
+                     makes a resumed PR step reuse the PR an interrupted attempt opened
+
+With a `meter` (task-file runs) every agent call and orchestrator command is
+bounded by what is left of the budget, and a node that crosses a limit
+returns `halted`, which ends the run halted_budget with its worktree kept.
 
 Large evidence is a file under `.agent-team/artifacts/<run-id>/` with its
 reference checkpointed; an agent's prompt inlines the file, since its sandbox
@@ -23,8 +28,9 @@ and hook keep `.agent-team/` unreadable.
 
 import json
 import os
+import subprocess
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +38,7 @@ import yaml
 from pydantic import ValidationError
 
 from agent_team.adapters.claude.capabilities import matches
+from agent_team.budget import BudgetMeter
 from agent_team.adapters.claude.invoke import ClaudeVersionError
 from agent_team.bootstrap.configure import CONFIG_NAME
 from agent_team.environments import AllocatorError, Environment, LockHeldError, acquire, release
@@ -39,6 +46,7 @@ from agent_team.orchestrator import pr as pr_mod
 from agent_team.orchestrator.dag import Dag, DagNode, OrchestratorError, build_dag
 from agent_team.orchestrator.machine import Echo, NodeInput, NodeResult
 from agent_team.orchestrator.workspace import (
+    ARTIFACTS_DIR,
     CommandResult,
     WorkspaceError,
     changed_files,
@@ -60,6 +68,7 @@ from agent_team.orchestrator.workspace import (
 )
 from agent_team.run_agent import Canonical, RunAgentError, requested_autonomy, run_agent
 from agent_team.runs.store import STATE_DIR, RunStore, repo_root
+from agent_team.runs.trace import Trace, open_trace
 from agent_team.schemas.adapter import AdapterResult
 from agent_team.schemas.bootstrap import RepoConfig
 from agent_team.schemas.common import AUTONOMY_ORDER, Autonomy
@@ -72,6 +81,9 @@ PR_AUTONOMY: Autonomy = "A3"
 MAX_INLINE_CHARS = 100_000
 
 COMMAND_KINDS = ("test", "lint", "typecheck")
+
+# The PR step's restart ledger: written before the push and once gh returns the URL.
+PR_LEDGER = "pr-ledger.json"
 
 
 def intake(given: NodeInput) -> NodeResult:
@@ -161,6 +173,9 @@ class DefaultExecutor:
     echo: Echo = print
     # Called with each agent node's normalized result (the eval reads token counts from it, step 13).
     observe: Callable[[str, AdapterResult], None] | None = None
+    meter: BudgetMeter | None = None
+    base: str | None = None  # the commit the workflow worktree is cut from (a task file's target.base)
+    model_classes: Mapping[str, str] = field(default_factory=dict)  # agent name -> model class override
     _config: RepoConfig | None = field(default=None, init=False, repr=False)
     _config_read: bool = field(default=False, init=False, repr=False)
 
@@ -234,7 +249,9 @@ class DefaultExecutor:
 
     def _workflow_env(self, run_id: str, workflow: str) -> Environment:
         spec = self.canonical.one("environment", self.environment_name).spec
-        env, created = workflow_environment(self.root, run_id, spec, requested_autonomy=self._writer_ceiling(workflow))
+        env, created = workflow_environment(
+            self.root, run_id, spec, requested_autonomy=self._writer_ceiling(workflow), base=self.base
+        )
         if created:
             store = RunStore.open(self.root, create=False)
             if store is not None:
@@ -242,11 +259,29 @@ class DefaultExecutor:
                     store.set_worktree_path(run_id, str(env.path))
         return env
 
+    # --- the budget -----------------------------------------------------------------
+
+    def _halted(self, note: str | None = None, *, cost_usd: float = 0.0, tokens: int = 0) -> NodeResult | None:
+        """A halted NodeResult when the meter has crossed a limit (wall clock included), else None."""
+        halt = self.meter.check() if self.meter is not None else None
+        if halt is None:
+            return None
+        return NodeResult(cost_usd=cost_usd, tokens=tokens, note=note, blocked=halt.reason(), halted=halt.limit)
+
+    def _timeout(self) -> float:
+        return self.meter.call_timeout_s(self.timeout_s) if self.meter is not None else self.timeout_s
+
+    def _trace(self, run_id: str) -> Trace:
+        return open_trace(self.root, run_id, self.redaction)
+
     # --- agent nodes ------------------------------------------------------------------
 
     def _agent(self, node: DagNode, given: NodeInput) -> NodeResult:
         name = node.agent or ""
         root = self.root
+        stopped = self._halted()
+        if stopped is not None:
+            return stopped
         environment: Environment | None = None
         base_commit: str | None = None
         before: str | None = None
@@ -259,9 +294,10 @@ class DefaultExecutor:
                 base_commit = given.inputs["diff"].get("head")
             prompt = agent_prompt(given, root)
         except (RunAgentError, AllocatorError, WorkspaceError, OSError) as exc:
-            return NodeResult(blocked=f"agent {name}: {exc}")
+            return self._halted() or NodeResult(blocked=f"agent {name}: {exc}")
 
         state_dir = root / STATE_DIR
+        tokens_before = self.meter.tokens if self.meter is not None else 0
         release(state_dir, given.run_id)
         try:
             child, result = run_agent(
@@ -280,16 +316,23 @@ class DefaultExecutor:
                 base_commit=base_commit,
                 state=given.state,  # type: ignore[arg-type]
                 echo=lambda line: self.echo(f"    {line}"),
+                model_class=self.model_classes.get(name),
+                meter=self.meter,
+                trace=self._trace(given.run_id),
             )
         except (RunAgentError, ClaudeVersionError, AllocatorError, LockHeldError) as exc:
-            return NodeResult(blocked=f"agent {name}: {exc}")
+            return self._halted() or NodeResult(blocked=f"agent {name}: {exc}")
         finally:
             acquire(state_dir, given.run_id)
         if self.observe is not None:
             self.observe(name, result)
         note = f"agent {name} run {child.run_id}: {result.status}"
+        tokens = self.meter.tokens - tokens_before if self.meter is not None else 0
+        stopped = self._halted(note, cost_usd=result.cost_usd, tokens=tokens)
+        if stopped is not None:
+            return stopped
         if result.status != "succeeded":
-            return NodeResult(cost_usd=result.cost_usd, note=note, blocked=f"agent {name} did not succeed")
+            return NodeResult(cost_usd=result.cost_usd, tokens=tokens, note=note, blocked=f"agent {name} did not succeed")
 
         structured = result.structured_output or {}
         try:
@@ -302,10 +345,13 @@ class DefaultExecutor:
             else:
                 out = NodeResult(evidence=agent_evidence(result.structured_output, result.result))
         except (WorkspaceError, OSError) as exc:
-            return NodeResult(cost_usd=result.cost_usd, note=note, blocked=str(exc))
+            return NodeResult(cost_usd=result.cost_usd, tokens=tokens, note=note, blocked=str(exc))
+        if out.halted is not None:
+            return replace(out, cost_usd=result.cost_usd, tokens=tokens, note=_join(note, out.note))
         return NodeResult(
             evidence=out.evidence,
             cost_usd=result.cost_usd,
+            tokens=tokens,
             note=_join(note, out.note),
             blocked=out.blocked,
         )
@@ -318,7 +364,10 @@ class DefaultExecutor:
         settled = settle(env)
         notes = [f"committed {settled.committed} path(s) the implementer left uncommitted" if settled.committed else None]
         if env.sandbox.sandboxed:
-            ran = run_command(env, "reproduction", command, timeout_s=self.timeout_s, base_env=os.environ)
+            ran = run_command(env, "reproduction", command, timeout_s=self._timeout(), base_env=os.environ)
+            stopped = self._halted(f"reproduction exit {ran.exit_code}")
+            if stopped is not None:
+                return stopped
             text = render_results([ran], f"reproduction before the fix, at {settled.head}, in srt")
             ref = write_artifact(self.root, given.run_id, "reproduction.log", redact_lines(text, self.redaction))
             errored = reproduction_error(command, ran)
@@ -416,9 +465,19 @@ class DefaultExecutor:
                 evidence={"test_output": {**ref, **summary, "results": []}, "tests_pass": False},
                 note="no checks run: srt is absent; install srt, then resume",
             )
-        results: list[CommandResult] = [
-            run_command(env, kind, c, timeout_s=self.timeout_s, base_env=os.environ) for kind, c in planned
-        ]
+        stopped = self._halted()
+        if stopped is not None:
+            return stopped
+        results: list[CommandResult] = []
+        for kind, c in planned:
+            # Each command gets at most what is left of the wall clock; a timeout past it is a halt.
+            results.append(run_command(env, kind, c, timeout_s=self._timeout(), base_env=os.environ))
+            stopped = self._halted(f"checks stopped after {len(results)}/{len(planned)} command(s)")
+            if stopped is not None:
+                text = render_results(results, f"checks at {head}, stopped by the budget, run by the orchestrator in srt")
+                write_artifact(self.root, given.run_id, f"test-{given.attempt}.log", redact_lines(text, self.redaction))
+                restore(env, head)
+                return stopped
         text = render_results(results, f"checks at {head}, run by the orchestrator in srt")
         ref = write_artifact(self.root, given.run_id, f"test-{given.attempt}.log", redact_lines(text, self.redaction))
         notes = []
@@ -474,8 +533,39 @@ class DefaultExecutor:
                 failed.append(f"{gates[0] if gates else key} (got {given.inputs.get(key)!r})")
         return failed
 
+    def _pr_ledger_path(self, run_id: str) -> Path:
+        return self.root / STATE_DIR / ARTIFACTS_DIR / run_id / PR_LEDGER
+
+    def _pr_ledger(self, run_id: str) -> dict[str, Any] | None:
+        """What an earlier attempt of this run's PR step got to, or None when it never started one."""
+        path = self._pr_ledger_path(run_id)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError):
+            return {"status": "unreadable"}  # fail closed: treated as an attempt that may have opened a PR
+        return data if isinstance(data, dict) else {"status": "unreadable"}
+
+    def _write_pr_ledger(self, run_id: str, entry: Mapping[str, Any]) -> None:
+        path = self._pr_ledger_path(run_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{PR_LEDGER}.tmp")
+        with tmp.open("w", encoding="utf-8") as fh:
+            fh.write(json.dumps(dict(entry), indent=2, sort_keys=True) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+
     def _pr(self, given: NodeInput) -> NodeResult:
         """Open the draft PR on the run branch, or end at HUMAN_DECISION with the branch kept and the reason."""
+        stopped = self._halted()
+        if stopped is not None:
+            return stopped
+
+        def timeout() -> float:
+            return min(pr_mod.GH_TIMEOUT_S, self.meter.remaining_s()) if self.meter is not None else pr_mod.GH_TIMEOUT_S
+
         inputs = given.inputs
         diff, tests, review = (inputs.get(k) if isinstance(inputs.get(k), Mapping) else {} for k in ("diff", "test_output", "review"))
         head = str(diff.get("head") or "")
@@ -484,6 +574,21 @@ class DefaultExecutor:
         def no_pr(reason: str, pushed: bool = False) -> NodeResult:
             evidence = {"status": "not_opened", "reason": reason, "branch": branch, "head": head, "pushed": pushed}
             return NodeResult(evidence={"pr": evidence}, note=f"no draft PR: {reason}; branch {branch} kept", escalate=True)
+
+        def recovered(opened: Mapping[str, Any], how: str) -> NodeResult:
+            self._trace(given.run_id).emit("pr_recovered", url=opened.get("url"), branch=branch, head=head, how=how)
+            return NodeResult(
+                evidence={"pr": {**opened, "recovered": how}},
+                note=f"draft PR {opened.get('url')} on {branch} at {short(head)} was opened before the restart ({how}); "
+                "not opened again",
+            )
+
+        ledger = self._pr_ledger(given.run_id)
+        if ledger is not None and ledger.get("status") == "opened":
+            if ledger.get("head") != head or ledger.get("branch") != branch:
+                return no_pr(f"a PR was already opened for {ledger.get('branch')} at {short(ledger.get('head'))}, "
+                             f"not this diff's {short(head)}; a human must decide")  # fmt: skip
+            return recovered(ledger, "pr ledger")
 
         if not head or tests.get("head") != head or review.get("head") != head:
             return no_pr("the diffed, tested and reviewed commits are not the same commit")
@@ -528,21 +633,75 @@ class DefaultExecutor:
         ref = write_artifact(self.root, given.run_id, "pr-body.md", pr_mod.body(body_inputs, self.redaction))
         if self.gh is None:
             return no_pr("gh is not on PATH; install the GitHub CLI, or push the branch and open the draft yourself")
-        if not pr_mod.gh_authenticated(self.gh, self.root):
-            return no_pr("gh is not authenticated; run 'gh auth login', or push the branch and open the draft yourself")
-        if not pr_mod.has_remote(self.root):
-            return no_pr(f"the repository has no '{pr_mod.REMOTE}' remote to push to")
+        for helper, reason in (
+            (lambda: pr_mod.gh_authenticated(self.gh, self.root, timeout_s=timeout()),
+             "gh is not authenticated; run 'gh auth login', or push the branch and open the draft yourself"),
+            (lambda: pr_mod.has_remote(self.root, timeout_s=timeout()),
+             f"the repository has no '{pr_mod.REMOTE}' remote to push to"),
+        ):
+            stopped = self._halted()
+            if stopped is not None:
+                return stopped
+            try:
+                ok = helper()
+            except (pr_mod.PrError, OSError, subprocess.TimeoutExpired) as exc:
+                return self._halted() or no_pr(str(exc))
+            stopped = self._halted()
+            if stopped is not None:
+                return stopped
+            if not ok:
+                return no_pr(reason)
+        if ledger is not None:
+            # An earlier attempt got as far as the push or gh pr create: never open a second PR.
+            stopped = self._halted()
+            if stopped is not None:
+                return stopped
+            try:
+                existing = pr_mod.find_existing(self.gh, self.root, branch, self.redaction, timeout_s=timeout())
+            except (pr_mod.PrError, OSError, subprocess.TimeoutExpired) as exc:
+                stopped = self._halted()
+                if stopped is not None:
+                    return stopped
+                return no_pr(f"an earlier attempt may already have opened a PR for {branch}, and gh could not say: {exc}",
+                             pushed=bool(ledger.get("pushed")))  # fmt: skip
+            if existing is not None:
+                if existing.get("headRefOid") != head:  # an unknown head is a mismatch, not a match
+                    stopped = self._halted()
+                    if stopped is not None:
+                        return stopped
+                    return no_pr(f"PR {existing.get('url')} for {branch} is at {short(existing.get('headRefOid'))}, "
+                                 f"not this diff's {short(head)}; a human must decide", pushed=True)  # fmt: skip
+                opened = {"status": "opened", "url": str(existing.get("url")), "branch": branch, "head": head,
+                          "draft": bool(existing.get("isDraft", True)), "blocked": given.escalated, "body": ref}  # fmt: skip
+                self._write_pr_ledger(given.run_id, opened)
+                return self._halted() or recovered(opened, "gh pr list")
+        stopped = self._halted()
+        if stopped is not None:
+            return stopped
+        attempt = {"status": "attempting", "branch": branch, "head": head, "pushed": False, "body": ref}
+        self._write_pr_ledger(given.run_id, attempt)
+        stopped = self._halted()
+        if stopped is not None:
+            return stopped
         try:
-            pr_mod.push(self.root, head, branch, self.redaction)
-        except (pr_mod.PrError, OSError) as exc:
-            return no_pr(str(exc))
+            pr_mod.push(self.root, head, branch, self.redaction, timeout_s=timeout())
+        except (pr_mod.PrError, OSError, subprocess.TimeoutExpired) as exc:
+            return self._halted() or no_pr(str(exc))
+        self._write_pr_ledger(given.run_id, {**attempt, "pushed": True})
+        stopped = self._halted()
+        if stopped is not None:
+            return stopped
         try:
             url = pr_mod.create(self._gh_argv(), self.root, branch, pr_mod.title(given.task, given.escalated),
-                                self.root / ref["path"], self.redaction)  # fmt: skip
-        except (pr_mod.PrError, OSError) as exc:
-            return no_pr(str(exc), pushed=True)
+                                self.root / ref["path"], self.redaction, timeout_s=timeout())  # fmt: skip
+        except (pr_mod.PrError, OSError, subprocess.TimeoutExpired) as exc:
+            return self._halted() or no_pr(str(exc), pushed=True)
         opened = {"status": "opened", "url": url, "branch": branch, "head": head, "draft": True,
                   "blocked": given.escalated, "body": ref}  # fmt: skip
+        self._write_pr_ledger(given.run_id, opened)
+        stopped = self._halted()
+        if stopped is not None:
+            return stopped
         return NodeResult(
             evidence={"pr": opened},
             note=f"draft PR {url} on {branch} at {short(head)}" + (", marked blocked" if given.escalated else ""),

@@ -451,8 +451,9 @@ def test_resume_refuses_a_run_from_an_older_database(repo: Path) -> None:
         assert [t.to_state for t in store.transitions("20261020-120000-abcdef")] == ["PLAN"]
         assert store.last_checkpoint("20261020-120000-abcdef") is None
     conn = sqlite3.connect(db)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 2
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 3
     assert "checkpoint" in [row[1] for row in conn.execute("PRAGMA table_info(transitions)")]
+    assert {"tokens_total", "halted"} <= {row[1] for row in conn.execute("PRAGMA table_info(runs)")}
     assert migrate(conn) == SCHEMA_VERSION
     conn.close()
     with pytest.raises(OrchestratorError, match="no checkpoint"):

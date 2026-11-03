@@ -8,11 +8,20 @@ whose environment is scrubbed and whose sandbox cannot read `~/.config/gh`.
     push   <reviewed commit>:refs/heads/agent-team/<run-id> to origin; never --force, never another branch
     open   gh pr create --draft --head agent-team/<run-id> --title ... --body-file <artifact>
 
+Restart safety: the executor writes a PR ledger artifact before the push and
+again once gh returns the URL. A resumed PR step that finds an opened ledger
+reuses it; one that finds an unfinished attempt asks gh for a PR on the run
+branch (`find_existing`) before creating, and opens nothing when gh cannot say.
+Only one OPEN PR whose head is the run branch in the base repository (not a
+fork's branch of the same name) counts as recovery; a closed or merged PR does
+not, and more than one candidate escalates rather than picking one.
+
 The body carries the evidence summary, the verdict, the unresolved risks and
 the minor findings as follow-ups. An escalated run's draft is titled
 `[blocked]` and lists every finding.
 """
 
+import json
 import os
 import subprocess
 from collections.abc import Mapping, Sequence
@@ -144,35 +153,71 @@ def gh_env() -> dict[str, str]:
     return {**os.environ, "GH_PROMPT_DISABLED": "1", "NO_COLOR": "1"}
 
 
-def gh_authenticated(gh: str, root: Path) -> bool:
+def gh_authenticated(gh: str, root: Path, *, timeout_s: float = GH_TIMEOUT_S) -> bool:
     proc = subprocess.run([gh, "auth", "status"], cwd=root, env=gh_env(), capture_output=True, text=True,
-                          timeout=GH_TIMEOUT_S, check=False)  # fmt: skip
+                          timeout=timeout_s, check=False)  # fmt: skip
     return proc.returncode == 0  # its output names the account; it is never read or stored
 
 
-def has_remote(root: Path) -> bool:
-    return subprocess.run(["git", "-C", str(root), "remote", "get-url", REMOTE], capture_output=True, check=False).returncode == 0
+def has_remote(root: Path, *, timeout_s: float = GH_TIMEOUT_S) -> bool:
+    proc = subprocess.run(["git", "-C", str(root), "remote", "get-url", REMOTE],
+                          capture_output=True, timeout=timeout_s, check=False)  # fmt: skip
+    return proc.returncode == 0
 
 
-def push(root: Path, head: str, branch: str, redaction: Sequence[str] = ()) -> None:
+def push(root: Path, head: str, branch: str, redaction: Sequence[str] = (), *, timeout_s: float = GH_TIMEOUT_S) -> None:
     """Push exactly `head` to the run branch on origin. No force: a branch that moved elsewhere refuses."""
     if not branch.startswith("agent-team/") or head.startswith("+"):
         raise PrError(f"refusing to push {head} to {branch}: only the run's agent-team/ branch is pushed")
     proc = subprocess.run(
         ["git", "-C", str(root), *SAFE_GIT, "push", "--no-verify", "--porcelain", REMOTE, f"{head}:refs/heads/{branch}"],
-        capture_output=True, text=True, timeout=GH_TIMEOUT_S, check=False,
+        capture_output=True, text=True, timeout=timeout_s, check=False,
     )  # fmt: skip
     if proc.returncode != 0:
         raise _fail(f"git push {REMOTE} {branch}", proc, redaction)
 
 
-def create(gh_argv: Sequence[str], root: Path, branch: str, pr_title: str, body_file: Path, redaction: Sequence[str] = ()) -> str:
+def create(
+    gh_argv: Sequence[str], root: Path, branch: str, pr_title: str, body_file: Path,
+    redaction: Sequence[str] = (), *, timeout_s: float = GH_TIMEOUT_S,
+) -> str:
     """`gh pr create --draft` for the run branch; returns the PR URL gh prints."""
     proc = subprocess.run(
         [*gh_argv, "--head", branch, "--title", pr_title, "--body-file", str(body_file)],
-        cwd=root, env=gh_env(), capture_output=True, text=True, timeout=GH_TIMEOUT_S, check=False,
+        cwd=root, env=gh_env(), capture_output=True, text=True, timeout=timeout_s, check=False,
     )  # fmt: skip
     if proc.returncode != 0:
         raise _fail("gh pr create", proc, redaction)
     lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
     return lines[-1] if lines else "(gh printed no URL)"
+
+
+PR_FIELDS = "url,number,isDraft,headRefOid,state,headRepositoryOwner,isCrossRepository"
+
+
+def find_existing(
+    gh: str, root: Path, branch: str, redaction: Sequence[str] = (), *, timeout_s: float = GH_TIMEOUT_S,
+) -> dict[str, Any] | None:
+    """The one OPEN PR whose head is the run branch in the base repository, or None.
+
+    Closed and merged PRs are not candidates, nor is a fork's branch of the same name
+    (`isCrossRepository` must be false, not merely absent). Raises PrError when gh cannot
+    answer or when more than one PR qualifies: the step escalates instead of choosing.
+    """
+    proc = subprocess.run(
+        [gh, "pr", "list", "--head", branch, "--state", "open", "--json", PR_FIELDS, "--limit", "10"],
+        cwd=root, env=gh_env(), capture_output=True, text=True, timeout=timeout_s, check=False,
+    )  # fmt: skip
+    if proc.returncode != 0:
+        raise _fail("gh pr list", proc, redaction)
+    try:
+        found = json.loads(proc.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        raise PrError("gh pr list printed something other than JSON") from exc
+    if not isinstance(found, list) or not all(isinstance(p, dict) for p in found):
+        raise PrError("gh pr list printed an unexpected shape")
+    candidates = [p for p in found if p.get("state") == "OPEN" and p.get("isCrossRepository") is False]
+    if len(candidates) > 1:
+        urls = ", ".join(str(p.get("url")) for p in candidates)
+        raise PrError(f"more than one open PR has {branch} as its head ({urls})")
+    return candidates[0] if candidates else None
