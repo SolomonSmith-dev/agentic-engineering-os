@@ -58,15 +58,82 @@ def load_task_file(path: Path) -> LoadedTaskFile:
     return LoadedTaskFile(path=path, text=text, task=task)
 
 
+def _scan_flow_line(
+    s: str,
+    stack: list[str],
+    in_single: bool,
+    in_double: bool,
+    escape: bool,
+) -> tuple[bool, bool, bool, bool, bool]:
+    i = 0
+    while i < len(s):
+        ch = s[i]
+        if in_double:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_double = False
+        elif in_single:
+            if ch == "'":
+                if i + 1 < len(s) and s[i + 1] == "'":
+                    i += 1
+                else:
+                    in_single = False
+        else:
+            if ch == "#":
+                break
+            elif ch == '"':
+                in_double = True
+            elif ch == "'":
+                in_single = True
+            elif ch in ("{", "["):
+                stack.append("}" if ch == "{" else "]")
+            elif ch in ("}", "]"):
+                if not stack or stack.pop() != ch:
+                    return False, False, in_single, in_double, escape
+                if not stack:
+                    return True, True, in_single, in_double, escape
+        i += 1
+    return False, True, in_single, in_double, escape
+
+
 def find_result_block(text: str) -> tuple[int, int] | None:
     start = end = None
     last_field_end = None
     offset = 0
-    for line in text.splitlines(keepends=True):
+    lines = text.splitlines(keepends=True)
+    for idx, line in enumerate(lines):
         if start is None:
-            if RESULT_KEY.match(line):
+            if m := RESULT_KEY.match(line):
                 start = offset
                 last_field_end = offset + len(line)
+                val = line[m.end() :].lstrip(" \t")
+                if val.startswith(("{", "[")):
+                    stack: list[str] = []
+                    closed, ok, in_single, in_double, escape = _scan_flow_line(
+                        val, stack, False, False, False
+                    )
+                    if not ok:
+                        return None
+                    if not closed:
+                        curr_offset = offset + len(line)
+                        for next_line in lines[idx + 1 :]:
+                            closed, ok, in_single, in_double, escape = _scan_flow_line(
+                                next_line, stack, in_single, in_double, escape
+                            )
+                            if not ok:
+                                return None
+                            if closed:
+                                end = curr_offset + len(next_line)
+                                break
+                            curr_offset += len(next_line)
+                        if not closed:
+                            return None
+                        while end > start and text[:end].endswith(("\n\n", "\r\n\r\n")):
+                            end -= 2 if text[:end].endswith("\r\n\r\n") else 1
+                        return start, end
         elif line[:1] not in (" ", "\t", "\r", "\n", "#"):  # any column-0 line other than # ends it: key, ---, ...
             end = offset
             break

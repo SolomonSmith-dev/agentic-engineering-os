@@ -160,3 +160,41 @@ def test_column_zero_comment_between_result_fields_does_not_truncate_block(tmp_p
     assert reloaded.task.result is not None
     assert reloaded.task.result.outcome == RESULT.outcome
 
+
+def test_write_result_flow_mapping_with_column_zero_closing_brace(tmp_path):
+    text = (
+        "kind: task\n"
+        "id: T-0001\n"
+        "target:\n  repo: /tmp/r\n  base: main\n"
+        "request: 'quoted: yes'\n"
+        "paths:\n  - src/\n"
+        "budget:\n  tokens: 2000000\n  minutes: 45\n  usd: 5.00\n"
+        "workflow: bug-fix\n"
+        "status: claimed\n"
+        "result: {\n"
+        "  run_id: old-run,\n"
+        "  outcome: busy,\n"
+        "  finished_at: 2026-11-01T00:00:00Z\n"
+        "}\n"
+    )
+    p = tmp_path / "T-0001.yaml"
+    p.write_text(text)
+    loaded = load_task_file(p)
+    assert write_result(loaded, RESULT) == p
+    data = p.read_text()
+    assert "}" not in data
+    reloaded = load_task_file(p)
+    assert reloaded.task.result is not None
+    assert reloaded.task.result.outcome == "pr_opened"
+
+
+def test_find_result_block_unbalanced_flow_mapping_returns_none():
+    unbalanced = (
+        "kind: task\n"
+        "id: T-0001\n"
+        "result: {\n"
+        "  run_id: old-run,\n"
+        "  outcome: busy\n"
+    )
+    assert find_result_block(unbalanced) is None
+

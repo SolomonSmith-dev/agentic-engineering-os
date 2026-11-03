@@ -665,6 +665,9 @@ def _go_mod_hits(root: Path, base: str, head: str, path: str) -> list[str]:
         )
         if not plain:
             hits.append(f"{verb} {rest}")
+    for verb, rest in sorted(_go_directives(b) - _go_directives(h)):
+        if verb in ("replace", "exclude", "retract"):
+            hits.append(f"removed: {verb} {rest}")
     return hits
 
 

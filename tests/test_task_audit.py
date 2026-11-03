@@ -486,6 +486,16 @@ def test_go_mod_replace_directives(git_repo: Path):
     assert rules(change(git_repo, {"go.mod": base + "replace (\n\ta => b v1\n)\n"})) == ["dep-source"]
 
 
+def test_go_mod_removed_replace_directive_flags(git_repo: Path):
+    base = "module x\n\ngo 1.22\n\nrequire a v1.0.0\nreplace a => ../a\n"
+    dep_repo(git_repo, {"go.mod": base})
+    assert change(git_repo, {"go.mod": base.replace("v1.0.0", "v1.1.0")}) == []
+    git(git_repo, "reset", "-q", "--hard", "HEAD~1")
+    found = change(git_repo, {"go.mod": "module x\n\ngo 1.22\n\nrequire a v1.0.0\n"})
+    assert rules(found) == ["dep-source"]
+    assert any("removed: replace a => ../a" in f.evidence for f in found)
+
+
 @pytest.mark.parametrize("name,line", [
     ("setup.py", "    dependency_links=['x'],\n"), ("setup.py", "    install_requires=['a @ git+https://x/a'],\n"),
     ("setup.cfg", "index_url = https://x\n"), ("setup.cfg", "find_links = foo\n"),
