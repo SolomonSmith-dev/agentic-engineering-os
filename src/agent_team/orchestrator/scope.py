@@ -17,10 +17,12 @@ import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from agent_team.tasks.audit import AuditFinding, audit_dependency_changes
 from agent_team.tasks.paths import normalize, within
+
+if TYPE_CHECKING:  # tasks.audit imports orchestrator.workspace, so a top-level import here would be circular
+    from agent_team.tasks.audit import AuditFinding
 
 PROTECTED_PREFIXES: tuple[str, ...] = (".claude", ".agent-team")
 DEFAULT_SCOPE: dict[str, Any] = {"paths": None, "allow_dependency_changes": True}
@@ -54,7 +56,7 @@ def changed_paths(root: Path, base: str, head: str) -> list[str]:
 class ScopeReport:
     outside: list[str]
     protected: list[str]
-    dependency: list[AuditFinding]
+    dependency: "list[AuditFinding]"
     paths: tuple[str, ...] | None = field(default=None)
 
     @property
@@ -91,5 +93,7 @@ def check_scope(root: Path, base: str, head: str, *, scope: Mapping[str, Any]) -
     outside = [f for f in files if not any(within(f, p) for p in paths)] if paths is not None else []
     dependency: list[AuditFinding] = []
     if paths is not None and not scope.get("allow_dependency_changes", False):
+        from agent_team.tasks.audit import audit_dependency_changes
+
         dependency = audit_dependency_changes(root, base, head)
     return ScopeReport(outside=outside, protected=protected, dependency=dependency, paths=paths)

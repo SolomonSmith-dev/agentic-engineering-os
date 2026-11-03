@@ -37,6 +37,7 @@ from agent_team.environments import AllocatorError, Environment, LockHeldError
 from agent_team.orchestrator import pr as pr_mod
 from agent_team.orchestrator.dag import Dag, DagNode, OrchestratorError, build_dag
 from agent_team.orchestrator.machine import Echo, NodeInput, NodeResult
+from agent_team.orchestrator.scope import DEFAULT_SCOPE, ScopeError, check_scope
 from agent_team.orchestrator.workspace import (
     CommandResult,
     WorkspaceError,
@@ -74,7 +75,8 @@ COMMAND_KINDS = ("test", "lint", "typecheck")
 
 
 def intake(given: NodeInput) -> NodeResult:
-    return NodeResult(evidence={"task": given.task})
+    """The task and its write scope; a run with no declared scope gets the default (tooling-state rule only)."""
+    return NodeResult(evidence={"task": given.task, "scope": given.inputs.get("scope") or dict(DEFAULT_SCOPE)})
 
 
 def plan(given: NodeInput) -> NodeResult:
@@ -399,6 +401,43 @@ class DefaultExecutor:
         except (AllocatorError, WorkspaceError) as exc:
             return NodeResult(blocked=str(exc))
 
+        # The scope check comes first: a run that wrote outside its paths runs none of its own commands.
+        scope = given.inputs.get("scope") or dict(DEFAULT_SCOPE)
+        try:
+            report = check_scope(self.root, env.meta.base_commit, head, scope=scope)
+        except (ScopeError, ValueError) as exc:
+            return NodeResult(blocked=f"scope check failed: {exc}")
+        scope_ref = write_artifact(
+            self.root,
+            given.run_id,
+            f"scope-{given.attempt}.json",
+            json.dumps(
+                {
+                    "head": head,
+                    "base": env.meta.base_commit,
+                    "scope": scope,
+                    "outside": report.outside,
+                    "protected": report.protected,
+                    "dependency": [f.render() for f in report.dependency],
+                    "findings": report.findings(),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+        )
+        if not report.ok:
+            files = report.findings()
+            return NodeResult(
+                evidence={
+                    "test_output": {**scope_ref, "head": head, "results": [], "skipped": ["all: scope violated"]},
+                    "tests_pass": False,
+                    "scope_check": "violated",
+                    "findings": files,
+                },
+                note=f"scope violated: {len(files)} file(s) outside the task's paths",
+            )
+
         known = self.commands()
         planned = ([("reproduction", str(command))] if command else []) + [
             (kind, c) for kind in COMMAND_KINDS for c in known[kind]
@@ -409,7 +448,7 @@ class DefaultExecutor:
             text = f"nothing run at {head}: srt is absent, and every command here runs code the agent wrote\n"
             ref = write_artifact(self.root, given.run_id, f"test-{given.attempt}.log", text)
             return NodeResult(
-                evidence={"test_output": {**ref, **summary, "results": []}, "tests_pass": False},
+                evidence={"test_output": {**ref, **summary, "results": []}, "tests_pass": False, "scope_check": "ok"},
                 note="no checks run: srt is absent; install srt, then resume",
             )
         results: list[CommandResult] = [
@@ -428,6 +467,7 @@ class DefaultExecutor:
             evidence={
                 "test_output": {**ref, **summary, "results": [r.summary() for r in results]},
                 "tests_pass": bool(results) and passed == len(results) and not moved,
+                "scope_check": "ok",
             },
             note=_join(*notes),
         )

@@ -221,6 +221,78 @@ def test_test_step_refuses_a_worktree_at_another_commit_or_dirty(repo: Path) -> 
     assert result.blocked == "the worktree has uncommitted changes the diff does not show"
 
 
+def at_test_scoped(head: str, scope: object = None) -> NodeInput:
+    inputs: dict[str, object] = {"diff": {"head": head}}
+    if scope is not None:
+        inputs["scope"] = scope
+    return NodeInput(run_id=RUN, workflow="bug-fix", state="TEST", attempt=1, task=TASK, inputs=inputs)
+
+
+def worktree_commit(worktree: Path, name: str, text: str = "x\n") -> str:
+    (worktree / name).write_text(text, encoding="utf-8")
+    git(worktree, "add", name)
+    git(worktree, "commit", "-q", "-m", f"add {name}")
+    return git(worktree, "rev-parse", "HEAD")
+
+
+def test_scope_violation_fails_the_gate_before_any_command_runs(repo: Path, no_srt: None) -> None:
+    marker = repo / "ran-a-command"
+    ex = executor(repo, test_commands=(f"touch {marker}",))
+    node = load_dag(ex.canonical, "bug-fix", "default").node("TEST")
+    ex(node, at_test_scoped("pending"))  # creates the worktree
+    worktree = repo / ".agent-team" / "worktrees" / RUN
+    worktree_commit(worktree, "value.txt", "fixed\n")
+    head = worktree_commit(worktree, "other.txt")
+    scope = {"paths": ["value.txt"], "allow_dependency_changes": False}
+    result = ex(node, at_test_scoped(head, scope))
+    assert result.blocked is None
+    evidence = result.evidence
+    assert evidence["scope_check"] == "violated" and evidence["tests_pass"] is False
+    assert evidence["test_output"]["results"] == [] and evidence["test_output"]["skipped"] == ["all: scope violated"]
+    assert evidence["test_output"]["head"] == head
+    [finding] = evidence["findings"]
+    assert finding["file"] == "other.txt" and finding["requirement_id"] == "SCOPE" and "value.txt" in finding["fix"]
+    assert result.note == "scope violated: 1 file(s) outside the task's paths"
+    assert not marker.exists(), "no command ran"
+    saved = json.loads((repo / evidence["test_output"]["path"]).read_text())
+    assert evidence["test_output"]["path"].endswith("scope-1.json") and saved["outside"] == ["other.txt"]
+
+
+def test_tooling_state_fails_even_the_default_scope(repo: Path, no_srt: None) -> None:
+    ex = executor(repo)
+    node = load_dag(ex.canonical, "bug-fix", "default").node("TEST")
+    ex(node, at_test_scoped("pending"))
+    worktree = repo / ".agent-team" / "worktrees" / RUN
+    (worktree / ".claude").mkdir()
+    head = worktree_commit(worktree, ".claude/settings.json", "{}\n")
+    result = ex(node, at_test_scoped(head))
+    assert result.evidence["scope_check"] == "violated"
+    assert result.evidence["findings"][0]["fix"].endswith("local tooling state is never committed")
+
+
+def test_an_in_scope_diff_reports_scope_ok_and_tests_as_before(repo: Path, no_srt: None) -> None:
+    ex = executor(repo)
+    node = load_dag(ex.canonical, "bug-fix", "default").node("TEST")
+    ex(node, at_test_scoped("pending"))
+    worktree = repo / ".agent-team" / "worktrees" / RUN
+    head = worktree_commit(worktree, "value.txt", "fixed\n")
+    for scope in (None, {"paths": ["value.txt"], "allow_dependency_changes": False}):
+        result = ex(node, at_test_scoped(head, scope))
+        assert result.evidence["scope_check"] == "ok" and "findings" not in result.evidence
+        assert result.evidence["tests_pass"] is False and "srt is absent" in (result.note or "")
+        assert set(node.evidence) <= set(result.evidence), "TEST leaves every declared evidence key"
+
+
+def test_a_scope_check_that_cannot_run_blocks(repo: Path, no_srt: None) -> None:
+    ex = executor(repo)
+    node = load_dag(ex.canonical, "bug-fix", "default").node("TEST")
+    ex(node, at_test_scoped("pending"))
+    worktree = repo / ".agent-team" / "worktrees" / RUN
+    head = worktree_commit(worktree, "value.txt", "fixed\n")
+    result = ex(node, at_test_scoped(head, {"paths": ["/absolute"], "allow_dependency_changes": False}))
+    assert result.blocked and result.blocked.startswith("scope check failed:")
+
+
 def test_a_check_that_commits_fails_the_gate_and_is_rolled_back(repo: Path, srt: str) -> None:
     ex = executor(repo, test_commands=("echo moved >> value.txt && git commit -qam moved",))
     node = load_dag(ex.canonical, "bug-fix", "default").node("TEST")

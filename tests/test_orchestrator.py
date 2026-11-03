@@ -179,6 +179,73 @@ def test_bug_fix_yaml_validates_and_builds_a_linear_chain(dag) -> None:
     assert dag.agents == ("implementer", "independent-reviewer")
 
 
+def test_scope_evidence_and_edges_in_the_bug_fix_dag(dag) -> None:
+    assert dag.node("INTAKE").evidence == ("task", "scope") and dag.node("INTAKE").inputs == ("scope",)
+    assert dag.node("DISCOVERY").inputs == ("scope",)
+    assert dag.node("IMPLEMENTATION").inputs == ("plan", "reproduction_command", "findings", "scope")
+    test = dag.node("TEST")
+    assert test.evidence == ("test_output", "tests_pass", "scope_check")
+    assert test.inputs == ("reproduction_command", "diff", "scope")
+    assert [(e.kind, e.to_state, str(e.gate), e.max_traversals) for e in test.edges] == [
+        ("advance", "CODE_REVIEW", "tests_pass", None),
+        ("retry", "IMPLEMENTATION", "scope_check == violated", 1),
+        ("escalate", "PR", "scope_check == violated", None),
+    ]
+
+
+VIOLATION = {"file": "other.txt", "line": None, "requirement_id": "SCOPE", "severity": "blocker",
+             "fix": "revert the change to other.txt: outside the task's paths value.txt"}  # fmt: skip
+
+
+def violated() -> NodeResult:
+    return ok(test_output={"results": []}, tests_pass=False, scope_check="violated", findings=[VIOLATION])
+
+
+def test_a_scope_violation_retries_implementation_once_with_the_file_list(repo: Path, store: RunStore, dag) -> None:
+    script = happy()
+    script["TEST"] = [violated(), ok(test_output="1 passed", tests_pass=True, scope_check="ok")]
+    record, fake, _ = run_fake(store, dag, script)
+    assert record.outcome == "succeeded"
+    assert path(store, record.run_id).count("IMPLEMENTATION") == 2
+    states = fake.states()
+    assert states[states.index("TEST") : states.index("TEST") + 3] == ["TEST", "IMPLEMENTATION", "TEST"]
+    retry = [c for c in fake.calls if c.state == "IMPLEMENTATION"][1]
+    assert retry.attempt == 2 and retry.inputs["findings"] == [VIOLATION]
+
+
+def test_a_second_scope_violation_escalates_to_a_blocked_run_without_review(repo: Path, store: RunStore, dag) -> None:
+    script = happy()
+    script["TEST"] = [violated()]
+    script["PR"] = [ok(pr={"status": "not_opened", "reason": "no review", "branch": "b", "head": "h"})]
+    record, fake, _ = run_fake(store, dag, script)
+    assert record.outcome == "blocked"
+    assert "CODE_REVIEW" not in fake.states()
+    assert fake.states().count("IMPLEMENTATION") == 2 and fake.states().count("TEST") == 2
+    notes = [t.note or "" for t in store.transitions(record.run_id)]
+    assert any("escalated: scope_check == violated after 1/1 retries" in n for n in notes)
+
+
+def test_intake_seeds_the_default_scope_or_the_given_one() -> None:
+    from agent_team.orchestrator.executors import intake
+    from agent_team.orchestrator.scope import DEFAULT_SCOPE
+
+    base = dict(run_id="r", workflow="bug-fix", state="INTAKE", attempt=1, task="t")
+    assert intake(NodeInput(**base, inputs={})).evidence == {"task": "t", "scope": DEFAULT_SCOPE}
+    given = {"paths": ["a"], "allow_dependency_changes": False}
+    assert intake(NodeInput(**base, inputs={"scope": given})).evidence == {"task": "t", "scope": given}
+
+
+def test_a_seeded_scope_reaches_the_nodes_that_list_it_as_input(repo: Path, store: RunStore, dag) -> None:
+    scope = {"paths": ["value.txt"], "allow_dependency_changes": False}
+    fake = FakeExecutor(happy())
+    run = start(store, dag, "x", seed={"scope": scope}, echo=lambda _: None)
+    walk(store, dag, fake, run.run_id, echo=lambda _: None)
+    by_state = {c.state: c.inputs for c in fake.calls}
+    assert by_state["INTAKE"]["scope"] == scope and by_state["DISCOVERY"]["scope"] == scope
+    assert by_state["IMPLEMENTATION"]["scope"] == scope and by_state["TEST"]["scope"] == scope
+    assert "scope" not in by_state["CODE_REVIEW"], "the reviewer's inputs are unchanged"
+
+
 def _spec(**changes: Any) -> WorkflowSpec:
     data = yaml.safe_load(BUG_FIX.read_text())
     data.update(changes)
@@ -199,8 +266,8 @@ def _transitions(*replace: tuple[int, dict[str, Any]], drop: int | None = None) 
     [
         (_transitions((2, {"from": "PLAN", "to": "TEST"})), "only the next state is reachable"),
         (_transitions(drop=0), "INTAKE needs exactly one edge to the next state"),
-        (_transitions((6, {"from": "CODE_REVIEW", "to": "IMPLEMENTATION", "max_traversals": 1})), "retry edge"),
-        (_transitions(drop=7), "no escalate edge"),
+        (_transitions((8, {"from": "CODE_REVIEW", "to": "IMPLEMENTATION", "max_traversals": 1})), "retry edge"),
+        (_transitions(drop=9), "no escalate edge"),
         (_transitions((4, {"from": "TEST", "to": "CODE_REVIEW", "gate": "reviewer_verdict == approve"})), "does not produce"),
         (_transitions((0, {"from": "INTAKE", "to": "DISCOVERY", "escalate": True})), "escalate edge goes forward"),
     ],
