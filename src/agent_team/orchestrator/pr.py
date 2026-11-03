@@ -12,6 +12,9 @@ Restart safety: the executor writes a PR ledger artifact before the push and
 again once gh returns the URL. A resumed PR step that finds an opened ledger
 reuses it; one that finds an unfinished attempt asks gh for a PR on the run
 branch (`find_existing`) before creating, and opens nothing when gh cannot say.
+Only one OPEN PR whose head is the run branch in the base repository (not a
+fork's branch of the same name) counts as recovery; a closed or merged PR does
+not, and more than one candidate escalates rather than picking one.
 
 The body carries the evidence summary, the verdict, the unresolved risks and
 the minor findings as follow-ups. An escalated run's draft is titled
@@ -184,10 +187,18 @@ def create(gh_argv: Sequence[str], root: Path, branch: str, pr_title: str, body_
     return lines[-1] if lines else "(gh printed no URL)"
 
 
+PR_FIELDS = "url,number,isDraft,headRefOid,state,headRepositoryOwner,isCrossRepository"
+
+
 def find_existing(gh: str, root: Path, branch: str, redaction: Sequence[str] = ()) -> dict[str, Any] | None:
-    """The PR whose head is the run branch, in any state, or None. Raises PrError when gh cannot answer."""
+    """The one OPEN PR whose head is the run branch in the base repository, or None.
+
+    Closed and merged PRs are not candidates, nor is a fork's branch of the same name
+    (`isCrossRepository` must be false, not merely absent). Raises PrError when gh cannot
+    answer or when more than one PR qualifies: the step escalates instead of choosing.
+    """
     proc = subprocess.run(
-        [gh, "pr", "list", "--head", branch, "--state", "all", "--json", "url,number,isDraft,headRefOid,state", "--limit", "5"],
+        [gh, "pr", "list", "--head", branch, "--state", "open", "--json", PR_FIELDS, "--limit", "10"],
         cwd=root, env=gh_env(), capture_output=True, text=True, timeout=GH_TIMEOUT_S, check=False,
     )  # fmt: skip
     if proc.returncode != 0:
@@ -198,4 +209,8 @@ def find_existing(gh: str, root: Path, branch: str, redaction: Sequence[str] = (
         raise PrError("gh pr list printed something other than JSON") from exc
     if not isinstance(found, list) or not all(isinstance(p, dict) for p in found):
         raise PrError("gh pr list printed an unexpected shape")
-    return found[0] if found else None
+    candidates = [p for p in found if p.get("state") == "OPEN" and p.get("isCrossRepository") is False]
+    if len(candidates) > 1:
+        urls = ", ".join(str(p.get("url")) for p in candidates)
+        raise PrError(f"more than one open PR has {branch} as its head ({urls})")
+    return candidates[0] if candidates else None

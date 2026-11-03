@@ -637,7 +637,7 @@ class DefaultExecutor:
                 return no_pr(f"an earlier attempt may already have opened a PR for {branch}, and gh could not say: {exc}",
                              pushed=bool(ledger.get("pushed")))  # fmt: skip
             if existing is not None:
-                if existing.get("headRefOid") not in (None, head):
+                if existing.get("headRefOid") != head:  # an unknown head is a mismatch, not a match
                     return no_pr(f"PR {existing.get('url')} for {branch} is at {short(existing.get('headRefOid'))}, "
                                  f"not this diff's {short(head)}; a human must decide", pushed=True)  # fmt: skip
                 opened = {"status": "opened", "url": str(existing.get("url")), "branch": branch, "head": head,
