@@ -52,6 +52,26 @@ def test_a_torn_last_line_is_skipped(tmp_path: Path) -> None:
     assert read_trace(tmp_path / "missing.jsonl") == []
 
 
+@pytest.mark.parametrize("tail", [b'{"event": "usa', b'{"text": "\xe2', b'{"event":"complete"}'])
+def test_resume_after_unterminated_trace_preserves_boundary(tmp_path: Path, tail: bytes) -> None:
+    from datetime import datetime, timedelta
+
+    trace = open_trace(tmp_path, "restart")
+    write_lines(trace.path,
+                {"event": "run_started", "at": "2026-11-02T10:00:00Z"},
+                {"event": "usage", "at": "2026-11-02T10:02:00Z"})
+    with trace.path.open("ab") as fh:
+        fh.write(tail)
+    before = trace.path.read_bytes()
+    boundary = trace.emit("run_resumed")
+    assert trace.path.read_bytes().startswith(before + b"\n")
+    events = read_trace(trace.path)
+    assert events[-1] == boundary
+    resumed = datetime.fromisoformat(boundary["at"].replace("Z", "+00:00"))
+    events.append({"event": "usage", "at": (resumed + timedelta(seconds=90)).isoformat()})
+    assert trace_elapsed_s(events) == pytest.approx(210)
+
+
 def test_spend_totals_count_only_usage_lines() -> None:
     events = [
         {"event": "usage", "tokens": 10, "usd": 0.25},

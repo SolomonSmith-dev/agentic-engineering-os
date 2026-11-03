@@ -7,6 +7,7 @@ last line (a crash mid-write) is skipped on read.
 """
 
 import json
+import os
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -44,8 +45,16 @@ class Trace:
             **{k: _clean(v, self.redaction) for k, v in fields.items()},
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(line, sort_keys=False, default=str) + "\n")
+        with self.path.open("a+b") as fh:
+            # Preserve a torn event, but never concatenate a new session boundary
+            # onto it. Binary inspection also handles a partial UTF-8 code point.
+            fh.seek(0, os.SEEK_END)
+            separator = b""
+            if fh.tell():
+                fh.seek(-1, os.SEEK_END)
+                if fh.read(1) != b"\n":
+                    separator = b"\n"
+            fh.write(separator + (json.dumps(line, sort_keys=False, default=str) + "\n").encode("utf-8"))
             fh.flush()
         return line
 
