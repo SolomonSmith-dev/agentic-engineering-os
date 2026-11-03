@@ -208,6 +208,10 @@ def run_agent(
             if meter is not None:
                 max_budget_usd = meter.call_budget_usd(max_budget_usd)
                 timeout_s = meter.call_timeout_s(timeout_s)
+                if meter.halted is not None or max_budget_usd <= 0:
+                    # Never start a call the budget cannot bound (the executor checks first; this is the backstop).
+                    reason = meter.halted.reason() if meter.halted is not None else "no per-call dollar budget is left"
+                    raise RunAgentError(reason)
             if runtime == "codex":
                 result = _run_codex(
                     store, run_id, root, state_dir, environment, agent, agent_doc.body, skills, policy,

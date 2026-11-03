@@ -31,6 +31,10 @@ from agent_team.schemas.task_file import BudgetLimit, TaskBudget
 # Where in a call usage becomes visible, per runtime: what the halt reason states.
 GRANULARITY = {"claude": "per assistant message", "codex": "at turn end"}
 
+# The smallest per-call dollar stop the Claude CLI accepts. With less than this left, no
+# call can be bounded by what remains, so the dollar limit counts as reached.
+CALL_FLOOR_USD = 0.01
+
 
 @dataclass(frozen=True)
 class Limits:
@@ -104,7 +108,9 @@ class Halt:
         return max(0.0, self.used - self.allowed)
 
     def reason(self) -> str:
-        text = f"budget halt: {self.limit} {self.used:.4g} > {self.allowed:.4g}"
+        text = f"budget halt: {self.limit} {self.used:.4g} >= {self.allowed:.4g}"
+        if self.used < self.allowed:
+            text = f"budget halt: {self.limit} {self.used:.4g} of {self.allowed:.4g}"
         return f"{text} ({self.detail})" if self.detail else text
 
 
@@ -139,12 +145,15 @@ class BudgetMeter:
         return self._seed_s + (self._clock() - self._start)
 
     def _over(self) -> Halt | None:
-        if self.tokens > self.limits.tokens:
+        """Spend at a limit is a halt, not only spend past it."""
+        if self.tokens >= self.limits.tokens:
             return Halt("tokens", self.tokens, self.limits.tokens)
-        if self.usd > self.limits.usd:
+        if self.usd >= self.limits.usd:
             return Halt("usd", self.usd, self.limits.usd)
+        if self.limits.usd - self.usd < CALL_FLOOR_USD:
+            return Halt("usd", self.usd, self.limits.usd, f"less than the ${CALL_FLOOR_USD} per-call minimum is left")
         minutes = self.elapsed_s() / 60
-        if minutes > self.limits.minutes:
+        if minutes >= self.limits.minutes:
             return Halt("minutes", minutes, self.limits.minutes)
         return None
 
@@ -192,8 +201,16 @@ class BudgetMeter:
         return max(0.0, self.limits.minutes * 60 - self.elapsed_s())
 
     def call_budget_usd(self, cap: float) -> float:
-        """A call's own dollar stop: what is left, never above `cap`, never below the CLI's 0.01 floor."""
-        return max(0.01, min(cap, self.remaining_usd()))
+        """A call's own dollar stop: what is left, never above `cap`.
+
+        Never rounded up to the CLI's floor: with less than CALL_FLOOR_USD left the meter
+        halts and this returns 0.0, so the caller must not start the call (see `check`).
+        """
+        left = min(cap, self.remaining_usd())
+        if left < CALL_FLOOR_USD:
+            self.check()
+            return 0.0
+        return left
 
     def call_timeout_s(self, cap: float) -> float:
         """A call's or command's timeout: what is left of the wall clock, never above `cap`."""
