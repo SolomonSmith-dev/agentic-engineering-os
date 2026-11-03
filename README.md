@@ -1,5 +1,7 @@
 # agentic-engineering-os
 
+[![CI](https://github.com/SolomonSmith-dev/agentic-engineering-os/actions/workflows/ci.yml/badge.svg)](https://github.com/SolomonSmith-dev/agentic-engineering-os/actions/workflows/ci.yml)
+
 `agent-team` runs Claude Code workers and an independent reviewer inside sandboxed git worktrees, records every run in SQLite, and gates pull requests on the reviewer's verdict.
 
 Status: build-order steps 1 to 13 of 15 are merged, version 0.1.0. The CLI answers `--version`, checks the host (`agent-team doctor`), discovers and configures a target repository (`agent-team init`, `agent-team configure`), builds repository memory with the archaeologist (`agent-team inspect`), runs one canonical agent end to end (`agent-team run --agent`, on Claude Code or, for the reviewer, Codex), runs the bug-fix workflow from reproduction to a draft PR (`agent-team run --workflow bug-fix`, `agent-team resume`), compares the team with two single-agent baselines on ten tasks with hidden verifiers (`agent-team eval run`, `agent-team eval report`, `agent-team eval --last`; no paid eval has been run yet), reads the run record (`agent-team trace`), sweeps stale run worktrees (`agent-team env sweep`), validates `canonical/` against the pydantic schemas (`agent-team validate`) and exports them as JSON Schema (`agent-team schema export`). See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the target design and build order.
