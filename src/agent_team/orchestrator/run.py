@@ -21,7 +21,7 @@ from agent_team.orchestrator.dag import Dag, OrchestratorError, build_dag
 from agent_team.orchestrator.executors import DefaultExecutor
 from agent_team.orchestrator.machine import Echo, Executor, reenter, start, walk
 from agent_team.run_agent import Canonical, RunAgentError, load_canonical
-from agent_team.runs.store import STATE_DIR, RunStore, new_run_id, repo_root
+from agent_team.runs.store import STATE_DIR, RunStore, check_state_dir_ignored, new_run_id, repo_root
 from agent_team.schemas.bootstrap import RepoConfig
 from agent_team.schemas.runs import RunRecord
 from agent_team.tasks.paths import WHOLE_REPO
@@ -81,22 +81,23 @@ def run_workflow(
     *,
     executor_factory: ExecutorFactory,
     policy_name: str = "default",
-    paths: Sequence[str] = (WHOLE_REPO,),
     scope: Mapping[str, Any] | None = None,
     echo: Echo = print,
 ) -> RunRecord:
     """Start a workflow run on `repo` and walk it until it ends or is interrupted.
 
     The path lock is taken before the run record exists, so a busy repository refuses
-    (LockHeldError) without touching it. A `scope` also fixes the lock paths.
+    (LockHeldError) without touching it. The lock paths are derived from `scope`, the same
+    scope the checkpoint carries and the executor enforces (the whole repo without one),
+    so what a run may write and what it holds locked cannot differ; resume derives them
+    the same way from the checkpoint.
     """
     dag, executor, redaction = _prepare(canonical_dir, workflow, policy_name, executor_factory)
     root = repo_root(repo)
+    check_state_dir_ignored(root)
     state_dir = root / STATE_DIR
-    if scope is not None and scope.get("paths") is not None:
-        paths = _scope_paths(scope)
     run_id = new_run_id(datetime.now(UTC))
-    note = _lock_note(acquire(state_dir, run_id, paths, max_runs=_max_runs(root)))
+    note = _lock_note(acquire(state_dir, run_id, _scope_paths(scope), max_runs=_max_runs(root)))
     try:
         store = RunStore.open(root, redaction_patterns=redaction)
         assert store is not None

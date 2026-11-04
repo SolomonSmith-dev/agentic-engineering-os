@@ -41,6 +41,10 @@ def noop_factory(canonical):  # noqa: ANN001, ANN201
     return FakeExecutor(happy())
 
 
+def scoped(*paths: str) -> dict:
+    return {"paths": list(paths), "allow_dependency_changes": False}
+
+
 def dead_pid() -> int:
     proc = subprocess.Popen(["true"])
     proc.wait()
@@ -71,7 +75,7 @@ def test_cli_busy_workflow_exits_2_and_names_the_holder(repo: Path, claude_on_pa
 def test_two_workflows_on_disjoint_paths_can_hold_locks_together(repo: Path) -> None:
     acquire(repo / ".agent-team", HOLDER, ["src/a"], pid=os.getpid())
     record = run_workflow(
-        repo, CANONICAL, "bug-fix", "Fix it.", executor_factory=noop_factory, paths=["src/b"], echo=lambda _: None
+        repo, CANONICAL, "bug-fix", "Fix it.", executor_factory=noop_factory, scope=scoped("src/b"), echo=lambda _: None
     )
     assert record.outcome == "succeeded"
     assert live_run_ids(repo / ".agent-team") == {HOLDER}, "the run released only its own entry"
@@ -80,7 +84,7 @@ def test_two_workflows_on_disjoint_paths_can_hold_locks_together(repo: Path) -> 
 def test_overlapping_paths_are_refused(repo: Path) -> None:
     acquire(repo / ".agent-team", HOLDER, ["src/a"], pid=os.getpid())
     with pytest.raises(LockHeldError) as err:
-        run_workflow(repo, CANONICAL, "bug-fix", "x", executor_factory=noop_factory, paths=["src/a/b.py"], echo=lambda _: None)
+        run_workflow(repo, CANONICAL, "bug-fix", "x", executor_factory=noop_factory, scope=scoped("src/a/b.py"), echo=lambda _: None)
     assert err.value.conflicts == [f"run {HOLDER} holds src/a, overlapping src/a/b.py"]
 
 
@@ -94,7 +98,7 @@ def test_the_run_holds_its_own_id_in_the_table_while_it_walks(repo: Path) -> Non
             return super().__call__(node, given)
 
     record = run_workflow(
-        repo, CANONICAL, "bug-fix", "x", executor_factory=lambda c: Spy(happy()), paths=["src/b"], echo=lambda _: None
+        repo, CANONICAL, "bug-fix", "x", executor_factory=lambda c: Spy(happy()), scope=scoped("src/b"), echo=lambda _: None
     )
     assert all(ids == {record.run_id} for ids in seen) and seen
     assert read_table(repo / ".agent-team") == []
@@ -107,7 +111,7 @@ def test_a_stale_takeover_becomes_the_first_note_per_entry(repo: Path) -> None:
         json.dumps({"run_id": "20261101-000000-dead02", "pid": dead_pid(), "host": socket.gethostname(), "acquired_at": ""})
     )
     record = run_workflow(
-        repo, CANONICAL, "bug-fix", "x", executor_factory=noop_factory, paths=["src"], echo=lambda _: None
+        repo, CANONICAL, "bug-fix", "x", executor_factory=noop_factory, scope=scoped("src"), echo=lambda _: None
     )
     with RunStore.open(repo, create=False) as store:
         notes = [t.note or "" for t in store.transitions(record.run_id)]
@@ -136,7 +140,7 @@ def test_the_configured_limit_is_enforced(repo: Path) -> None:
     acquire(state_dir, HOLDER, ["a"], pid=os.getpid())
     acquire(state_dir, "20261101-000000-bbbbbb", ["b"], pid=os.getpid())
     with pytest.raises(LockHeldError, match=r"limit 2"):
-        run_workflow(repo, CANONICAL, "bug-fix", "x", executor_factory=noop_factory, paths=["c"], echo=lambda _: None)
+        run_workflow(repo, CANONICAL, "bug-fix", "x", executor_factory=noop_factory, scope=scoped("c"), echo=lambda _: None)
     assert RunStore.open(repo, create=False) is None
 
 
@@ -170,7 +174,7 @@ def test_resume_locks_the_checkpoints_scope(repo: Path) -> None:
     with pytest.raises(KeyboardInterrupt):
         run_workflow(
             repo, CANONICAL, "bug-fix", "x", executor_factory=factory_for(FakeExecutor(script)),
-            paths=["src/b"], scope=scope, echo=lambda _: None,
+            scope=scope, echo=lambda _: None,
         )  # fmt: skip
     with RunStore.open(repo, create=False) as store:
         [run] = store.list_runs()
@@ -187,3 +191,12 @@ def test_start_seeds_evidence_and_takes_a_given_run_id(repo: Path) -> None:
         assert store.last_checkpoint(run.run_id).data["evidence"] == {"scope": {"paths": ["a"]}}
         other = start(store, dag, "x", echo=lambda _: None)
         assert store.last_checkpoint(other.run_id).data["evidence"] == {}
+
+
+def test_unignored_state_rejection_leaves_no_runtime_files(repo: Path) -> None:
+    from agent_team.runs import RunStoreError
+
+    (repo / ".gitignore").write_text("")
+    with pytest.raises(RunStoreError, match="not gitignored"):
+        run_workflow(repo, CANONICAL, "bug-fix", "x", executor_factory=noop_factory, echo=lambda _: None)
+    assert not (repo / ".agent-team").exists()

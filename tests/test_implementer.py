@@ -444,7 +444,7 @@ def run_scoped(repo: Path, paths: list[str], *, allow_dependency_changes: bool =
         timeout_s=60, test_commands=(TEST_COMMAND,), gh=shutil.which("gh"), echo=lambda _: None,
     )  # fmt: skip
     scope = {"paths": paths, "allow_dependency_changes": allow_dependency_changes}
-    return run_workflow(repo, CANONICAL, "bug-fix", TASK, executor_factory=factory, paths=paths, scope=scope, echo=lambda _: None)
+    return run_workflow(repo, CANONICAL, "bug-fix", TASK, executor_factory=factory, scope=scope, echo=lambda _: None)
 
 
 def test_scope_violation_retries_once_with_the_file_list(repo: Path, world: World, monkeypatch: pytest.MonkeyPatch) -> None:

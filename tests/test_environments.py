@@ -316,11 +316,14 @@ def test_lock_from_another_host_is_never_taken_over(repo: Path) -> None:
         acquire(state(repo), "run-1")
 
 
-def test_unreadable_lock_is_treated_as_stale(repo: Path) -> None:
+def test_unreadable_lock_refuses_without_replacing_state(repo: Path) -> None:
     state(repo).mkdir()
-    (state(repo) / "lock").write_text("not json", encoding="utf-8")
-    [replaced] = acquire(state(repo), "run-1")
-    assert replaced.run_id == "<unreadable>"
+    lock = state(repo) / "lock"
+    lock.write_text("not json", encoding="utf-8")
+    with pytest.raises(LockHeldError):
+        acquire(state(repo), "run-1")
+    assert lock.read_text(encoding="utf-8") == "not json"
+    assert not (state(repo) / "locks.json").exists()
 
 
 # --- sweep --------------------------------------------------------------------
@@ -396,3 +399,54 @@ def test_env_sweep_refuses_unignored_state_dir(repo: Path) -> None:
     result = runner.invoke(app, ["env", "sweep", "--repo", str(repo)])
     assert result.exit_code == 2
     assert "not gitignored" in result.output
+
+
+def _allocate_paused(repo, run_id, entered, proceed, ready, done, results):
+    from agent_team.environments import worktree
+
+    original = worktree._git
+
+    def paused(root, *args, **kwargs):
+        if args[:2] == ("worktree", "add"):
+            entered.set()
+            if not proceed.wait(15):
+                raise RuntimeError("allocation pause timed out")
+        return original(root, *args, **kwargs)
+
+    if entered is not None:
+        worktree._git = paused
+    try:
+        acquire(repo / ".agent-team", run_id, [run_id])
+        ready.set()
+        env = create(repo, run_id, spec())
+        results.put((run_id, env.sandbox.port_offset))
+    except Exception as exc:
+        results.put((run_id, repr(exc)))
+    finally:
+        release(repo / ".agent-team", run_id)
+        done.set()
+
+
+def test_concurrent_disjoint_allocations_reserve_distinct_port_offsets(repo: Path) -> None:
+    ctx = multiprocessing.get_context("spawn")
+    entered, proceed, first_done, second_done = [ctx.Event() for _ in range(4)]
+    first_ready, second_ready = ctx.Event(), ctx.Event()
+    results = ctx.Queue()
+    first = ctx.Process(target=_allocate_paused, args=(repo, "parallel-a", entered, proceed, first_ready, first_done, results))
+    second = ctx.Process(target=_allocate_paused, args=(repo, "parallel-b", None, proceed, second_ready, second_done, results))
+    first.start()
+    try:
+        assert entered.wait(10), "first allocator did not reach worktree creation"
+        second.start()
+        assert second_ready.wait(10), "disjoint workflow could not acquire its path lock"
+        # Without serialization B publishes slot 1 while A is paused after selecting it.
+        second_done.wait(2)
+    finally:
+        proceed.set()
+        first.join(15)
+        if second.pid is not None:
+            second.join(15)
+    assert first.exitcode == second.exitcode == 0
+    allocated = [results.get(timeout=2), results.get(timeout=2)]
+    assert sorted(value for _, value in allocated) == [100, 200], allocated
+    assert sorted(m.port_slot for m in list_worktrees(repo)) == [1, 2]

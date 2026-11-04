@@ -115,19 +115,22 @@ def test_stale_legacy_lock_is_deleted(tmp_path: Path) -> None:
         json.dumps({"run_id": "old", "pid": dead_pid(), "host": socket.gethostname(), "acquired_at": ""})
     )
     [stale] = acquire(tmp_path, "r2", ["src"])
-    assert stale.run_id == "old" and not (tmp_path / "lock").exists()
+    marker = json.loads((tmp_path / "lock").read_text())  # the stale lock is replaced by the table marker
+    assert stale.run_id == "old" and marker["table"] is True
+    assert marker["host"] != socket.gethostname(), "legacy readers cannot reclaim the table marker"
 
 
-def test_unreadable_legacy_lock_is_stale(tmp_path: Path) -> None:
+def test_unreadable_state_fails_closed_not_stale(tmp_path: Path) -> None:
+    # An unreadable legacy lock or table may name a live owner, so it refuses (details in test_locks_failclosed.py).
     (tmp_path / "lock").write_text("not json")
-    [stale] = acquire(tmp_path, "r2", ["src"])
-    assert stale.run_id == "<unreadable>" and not (tmp_path / "lock").exists()
-
-
-def test_unreadable_table_does_not_wedge_the_repo(tmp_path: Path) -> None:
+    with pytest.raises(LockHeldError):
+        acquire(tmp_path, "r2", ["src"])
+    assert (tmp_path / "lock").read_text() == "not json"
+    (tmp_path / "lock").unlink()
     (tmp_path / TABLE_NAME).write_text("{broken")
-    assert acquire(tmp_path, "r1", ["src"]) == []
-    assert live_run_ids(tmp_path) == {"r1"}
+    with pytest.raises(LockHeldError):
+        acquire(tmp_path, "r1", ["src"])
+    assert (tmp_path / TABLE_NAME).read_text() == "{broken"
 
 
 def test_max_runs_must_be_one_to_three(tmp_path: Path) -> None:
@@ -150,7 +153,7 @@ def test_release_removes_only_the_holders_entry(tmp_path: Path) -> None:
 def test_table_is_private_and_atomic(tmp_path: Path) -> None:
     acquire(tmp_path, "r1", ["a"])
     assert (tmp_path / TABLE_NAME).stat().st_mode & 0o777 == 0o600
-    assert sorted(p.name for p in tmp_path.iterdir()) == [GUARD_NAME, TABLE_NAME]
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted([GUARD_NAME, LEGACY_LOCK, TABLE_NAME])  # `lock` is the marker legacy processes honour
 
 
 def test_a_live_run_cannot_lock_twice_but_a_dead_one_resumes(tmp_path: Path) -> None:
