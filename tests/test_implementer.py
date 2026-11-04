@@ -13,6 +13,7 @@ when AGENT_TEAM_REQUIRE_SRT=1 (as in CI). One test covers the run without srt.
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -26,8 +27,8 @@ from agent_team import cli
 from agent_team.adapters.claude import resolve
 from agent_team.adapters.claude.hook import check
 from agent_team.cli import app
-from agent_team.environments import create, read_lock, srt_path
-from agent_team.orchestrator import DefaultExecutor
+from agent_team.environments import create, live_run_ids, srt_path
+from agent_team.orchestrator import DefaultExecutor, default_executor_factory, run_workflow
 from agent_team.orchestrator import pr as pr_mod
 from agent_team.orchestrator.workspace import LEFTOVER_MESSAGE, WorkspaceError, settle
 from agent_team.run_agent import load_canonical
@@ -82,6 +83,11 @@ if agent == "implementer" and state == "DISCOVERY":
 elif agent == "implementer":
     action = scenario["implement"][attempt - 1]
     write("value.txt", "fixed\nand handled\n" if action == "fix-more" else "fixed\n")
+    if action == "out-of-scope":
+        write("other.txt", f"stray write {{attempt}}\n")
+        git("add", "other.txt")
+    elif os.path.exists("other.txt"):
+        git("rm", "-q", "-f", "other.txt")  # the retry reverts what the SCOPE finding named
     if action != "fix-uncommitted":
         git("commit", "-q", "-am", f"Fix the value, attempt {{attempt}}")
     out = {{"reproduction_command": "sh check.sh", "reproduction_fails": False,
@@ -293,7 +299,7 @@ def test_happy_path_opens_a_draft_pr_from_the_reviewed_commit(repo: Path, world:
     [check_env] = (repo / ".agent-team" / "tmp").glob("*/check-env.txt")
     assert TOKEN not in check_env.read_text() and "GH_TOKEN" not in check_env.read_text()
     assert TOKEN not in (repo / ".agent-team" / "runs.db").read_bytes().decode("utf-8", "replace")
-    assert read_lock(repo / ".agent-team") is None
+    assert live_run_ids(repo / ".agent-team") == set()
 
 
 @pytest.mark.srt
@@ -429,6 +435,69 @@ def test_resume_across_the_test_and_pr_steps(repo: Path, world: World, srt: str,
     assert len([c for c in children if c.workflow == "agent:independent-reviewer"]) == 1, "earlier nodes are not re-run"
     assert len(world.pr_creates()) == 1
     assert remote_branch(repo, f"agent-team/{run.run_id}") == checkpoint.data["evidence"]["diff"]["head"]
+
+
+def run_scoped(repo: Path, paths: list[str], *, allow_dependency_changes: bool = False):  # noqa: ANN201
+    """`run_workflow` with a task scope, wired the way the CLI wires a workflow run."""
+    factory = default_executor_factory(
+        repo=repo, canonical_dir=CANONICAL, claude=shutil.which("claude") or "claude", max_budget_usd=1.0,
+        timeout_s=60, test_commands=(TEST_COMMAND,), gh=shutil.which("gh"), echo=lambda _: None,
+    )  # fmt: skip
+    scope = {"paths": paths, "allow_dependency_changes": allow_dependency_changes}
+    return run_workflow(repo, CANONICAL, "bug-fix", TASK, executor_factory=factory, scope=scope, echo=lambda _: None)
+
+
+def test_scope_violation_retries_once_with_the_file_list(repo: Path, world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("agent_team.environments.sandbox.srt_path", lambda: None)  # the scope check precedes any command
+    world.play(implement=["out-of-scope", "fix-commit"], reviews=["approve"])
+    run_scoped(repo, ["value.txt", "check.sh"])
+    run, transitions, checkpoint, _ = workflow_run(repo)
+    assert ("TEST", "IMPLEMENTATION") in [(t.from_state, t.to_state) for t in transitions]
+    assert [t.to_state for t in transitions].count("IMPLEMENTATION") == 2
+    retry_prompt = seen(repo, "implementer", "IMPLEMENTATION", 2)["stdin"]
+    assert "other.txt" in retry_prompt and "SCOPE" in retry_prompt
+    assert "other.txt" not in seen(repo, "implementer", "IMPLEMENTATION", 1)["stdin"]
+    assert "scope" in seen(repo, "implementer", "DISCOVERY", 1)["stdin"], "DISCOVERY is told the scope"
+    first_test = next(t for t in transitions if t.from_state == "TEST")
+    assert "scope violated: 1 file(s) outside the task's paths" in first_test.note
+    assert checkpoint.data["evidence"]["scope"] == {"paths": ["value.txt", "check.sh"], "allow_dependency_changes": False}
+    # Without srt the retry's TEST ends at the srt guard, but its scope check came back clean.
+    assert "scope_check == violated (got 'ok')" in transitions[-1].note and run.outcome == "blocked"
+    assert live_run_ids(repo / ".agent-team") == set()
+
+
+def test_scope_violation_twice_ends_blocked_without_a_pr(repo: Path, world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("agent_team.environments.sandbox.srt_path", lambda: None)
+    world.play(implement=["out-of-scope", "out-of-scope"], reviews=[])
+    run_scoped(repo, ["value.txt", "check.sh"])
+    run, transitions, checkpoint, children = workflow_run(repo)
+    assert run.outcome == "blocked" and world.pr_creates() == []
+    assert [t.to_state for t in transitions].count("TEST") == 2
+    assert "CODE_REVIEW" not in [t.to_state for t in transitions]
+    assert not [c for c in children if c.workflow == "agent:independent-reviewer"], "no review was started"
+    assert checkpoint.data["evidence"]["scope_check"] == "violated"
+    assert checkpoint.data["evidence"]["pr"]["status"] == "not_opened"
+    assert remote_branch(repo, f"agent-team/{run.run_id}") is None, "nothing was pushed"
+
+
+@pytest.mark.srt
+def test_scope_violation_then_a_clean_retry_still_opens_the_draft_pr(repo: Path, world: World, srt: str) -> None:
+    world.play(implement=["out-of-scope", "fix-commit"], reviews=["approve"])
+    run_scoped(repo, ["value.txt", "check.sh"])
+    run, transitions, checkpoint, _ = workflow_run(repo)
+    assert run.outcome == "succeeded" and len(world.pr_creates()) == 1
+    assert checkpoint.data["evidence"]["scope_check"] == "ok"
+
+
+def test_prompt_runs_still_pass_the_scope_gate_with_the_default_scope(repo: Path, world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("agent_team.environments.sandbox.srt_path", lambda: None)
+    world.play(implement=["out-of-scope"], reviews=[])  # writes anywhere: only tooling state is barred without paths
+    run_cli(repo)
+    run, transitions, checkpoint, _ = workflow_run(repo)
+    evidence = checkpoint.data["evidence"]
+    assert evidence["scope"] == {"paths": None, "allow_dependency_changes": True}
+    assert [t.to_state for t in transitions].count("IMPLEMENTATION") == 1, "no scope retry"
+    assert "scope_check == violated (got 'ok')" in transitions[-1].note, "TEST's scope check passed; srt is what ended the run"
 
 
 def test_without_srt_nothing_runs_and_the_run_blocks_at_test(repo: Path, world: World, monkeypatch: pytest.MonkeyPatch) -> None:

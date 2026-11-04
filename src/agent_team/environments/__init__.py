@@ -1,6 +1,6 @@
 """agent_team.environments: worktree allocator, run lock and srt wrapper (build-order step 5)."""
 
-from agent_team.environments.lock import LockHeldError, LockInfo, acquire, live_run_id, read_lock, release
+from agent_team.environments.locks import LockEntry, LockHeldError, acquire, live_run_ids, read_table, release
 from agent_team.environments.ports import NoFreeSlotError
 from agent_team.environments.sandbox import UNSANDBOXED_CEILING, Sandbox, effective_ceiling, srt_path
 from agent_team.environments.worktree import (
@@ -20,7 +20,7 @@ __all__ = [
     "AllocatorError",
     "Environment",
     "LockHeldError",
-    "LockInfo",
+    "LockEntry",
     "NoFreeSlotError",
     "Sandbox",
     "SweepResult",
@@ -31,8 +31,8 @@ __all__ = [
     "dispose",
     "effective_ceiling",
     "list_worktrees",
-    "live_run_id",
-    "read_lock",
+    "live_run_ids",
+    "read_table",
     "release",
     "srt_path",
     "sweep",

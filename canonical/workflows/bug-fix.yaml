@@ -7,12 +7,14 @@ purpose: Reproduce, fix and review one bug; open a draft PR gated on the reviewe
 # .agent-team/artifacts/<run-id>/; the evidence holds its path and the commit it describes.
 states: [INTAKE, DISCOVERY, PLAN, IMPLEMENTATION, TEST, CODE_REVIEW, PR, HUMAN_DECISION]
 nodes:
-  INTAKE: { step: intake, evidence: [task] }
+  # scope is the task's write scope (paths, allow_dependency_changes); a prompt run gets the default scope.
+  INTAKE: { step: intake, evidence: [task, scope], inputs: [scope] }
   # The MVP has no debugger agent; the implementer reproduces, in its own process,
   # and the orchestrator re-runs the reproduction in the sandbox (reproduction_check).
   DISCOVERY:
     agent: implementer
     evidence: [reproduction_command, reproduction_fails, reproduction_check]
+    inputs: [scope]
   # One synthetic acceptance criterion when the task gives none: the reproduction passes.
   PLAN:
     step: plan
@@ -22,12 +24,13 @@ nodes:
   IMPLEMENTATION:
     agent: implementer
     evidence: [diff, claimed_changes]
-    inputs: [plan, reproduction_command, findings]
-  # Orchestrator-run, in the sandbox, on exactly the commit the diff ends at.
+    inputs: [plan, reproduction_command, findings, scope]
+  # Orchestrator-run, in the sandbox, on exactly the commit the diff ends at. The scope check
+  # comes first: a diff that writes outside the task's paths runs no command and fails the gate.
   TEST:
     step: test
-    evidence: [test_output, tests_pass]
-    inputs: [reproduction_command, diff]
+    evidence: [test_output, tests_pass, scope_check]
+    inputs: [reproduction_command, diff, scope]
   # Fresh process: the plan, the diff and the orchestrator's test output, never a transcript.
   CODE_REVIEW:
     agent: independent-reviewer
@@ -44,6 +47,8 @@ transitions:
   - { from: PLAN, to: IMPLEMENTATION }
   - { from: IMPLEMENTATION, to: TEST }
   - { from: TEST, to: CODE_REVIEW, gate: tests_pass } # the regression test passes after the fix
+  - { from: TEST, to: IMPLEMENTATION, gate: scope_check == violated, max_traversals: 1 } # one retry with the file list as findings
+  - { from: TEST, to: PR, gate: scope_check == violated, escalate: true } # PR then refuses (no review): blocked, branch kept
   - { from: CODE_REVIEW, to: PR, gate: reviewer_verdict == approve }
   - { from: CODE_REVIEW, to: IMPLEMENTATION, gate: reviewer_verdict == changes, max_traversals: 1 }
   - { from: CODE_REVIEW, to: PR, gate: reviewer_verdict == escalate, escalate: true }

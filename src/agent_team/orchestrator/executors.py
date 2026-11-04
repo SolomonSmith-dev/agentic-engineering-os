@@ -2,8 +2,7 @@
 
 An agent node is one `run_agent` call: it records its own child run (workflow
 `agent:<name>`), and its cost is added to the workflow run. `run_agent` takes
-the repository lock itself, so the workflow hands the lock over for the call
-and takes it back afterwards. Where the agent works follows its `workspace`:
+no lock of its own (`lock=False`): the workflow holds the repository lock for the whole run. Where the agent works follows its `workspace`:
 
     worktree           the workflow run's own worktree (workspace.py): every implementer attempt commits there
     read_only_mirror   a fresh child worktree cut at the diff's head: the reviewer reads exactly what it reviews
@@ -34,10 +33,11 @@ from pydantic import ValidationError
 from agent_team.adapters.claude.capabilities import matches
 from agent_team.adapters.claude.invoke import ClaudeVersionError
 from agent_team.bootstrap.configure import CONFIG_NAME
-from agent_team.environments import AllocatorError, Environment, LockHeldError, acquire, release
+from agent_team.environments import AllocatorError, Environment, LockHeldError
 from agent_team.orchestrator import pr as pr_mod
 from agent_team.orchestrator.dag import Dag, DagNode, OrchestratorError, build_dag
 from agent_team.orchestrator.machine import Echo, NodeInput, NodeResult
+from agent_team.orchestrator.scope import DEFAULT_SCOPE, ScopeError, check_scope
 from agent_team.orchestrator.workspace import (
     CommandResult,
     WorkspaceError,
@@ -75,7 +75,8 @@ COMMAND_KINDS = ("test", "lint", "typecheck")
 
 
 def intake(given: NodeInput) -> NodeResult:
-    return NodeResult(evidence={"task": given.task})
+    """The task and its write scope; a run with no declared scope gets the default (tooling-state rule only)."""
+    return NodeResult(evidence={"task": given.task, "scope": given.inputs.get("scope") or dict(DEFAULT_SCOPE)})
 
 
 def plan(given: NodeInput) -> NodeResult:
@@ -261,8 +262,6 @@ class DefaultExecutor:
         except (RunAgentError, AllocatorError, WorkspaceError, OSError) as exc:
             return NodeResult(blocked=f"agent {name}: {exc}")
 
-        state_dir = root / STATE_DIR
-        release(state_dir, given.run_id)
         try:
             child, result = run_agent(
                 self.repo,
@@ -279,12 +278,11 @@ class DefaultExecutor:
                 environment=environment,
                 base_commit=base_commit,
                 state=given.state,  # type: ignore[arg-type]
+                lock=False,  # the workflow holds this repository's lock for the whole run
                 echo=lambda line: self.echo(f"    {line}"),
             )
         except (RunAgentError, ClaudeVersionError, AllocatorError, LockHeldError) as exc:
             return NodeResult(blocked=f"agent {name}: {exc}")
-        finally:
-            acquire(state_dir, given.run_id)
         if self.observe is not None:
             self.observe(name, result)
         note = f"agent {name} run {child.run_id}: {result.status}"
@@ -403,6 +401,43 @@ class DefaultExecutor:
         except (AllocatorError, WorkspaceError) as exc:
             return NodeResult(blocked=str(exc))
 
+        # The scope check comes first: a run that wrote outside its paths runs none of its own commands.
+        scope = given.inputs.get("scope") or dict(DEFAULT_SCOPE)
+        try:
+            report = check_scope(self.root, env.meta.base_commit, head, scope=scope)
+        except (ScopeError, ValueError) as exc:
+            return NodeResult(blocked=f"scope check failed: {exc}")
+        scope_ref = write_artifact(
+            self.root,
+            given.run_id,
+            f"scope-{given.attempt}.json",
+            json.dumps(
+                {
+                    "head": head,
+                    "base": env.meta.base_commit,
+                    "scope": scope,
+                    "outside": report.outside,
+                    "protected": report.protected,
+                    "dependency": [f.render() for f in report.dependency],
+                    "findings": report.findings(),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+        )
+        if not report.ok:
+            files = report.findings()
+            return NodeResult(
+                evidence={
+                    "test_output": {**scope_ref, "head": head, "results": [], "skipped": ["all: scope violated"]},
+                    "tests_pass": False,
+                    "scope_check": "violated",
+                    "findings": files,
+                },
+                note=f"scope violated: {len(files)} file(s) outside the task's paths",
+            )
+
         known = self.commands()
         planned = ([("reproduction", str(command))] if command else []) + [
             (kind, c) for kind in COMMAND_KINDS for c in known[kind]
@@ -413,7 +448,7 @@ class DefaultExecutor:
             text = f"nothing run at {head}: srt is absent, and every command here runs code the agent wrote\n"
             ref = write_artifact(self.root, given.run_id, f"test-{given.attempt}.log", text)
             return NodeResult(
-                evidence={"test_output": {**ref, **summary, "results": []}, "tests_pass": False},
+                evidence={"test_output": {**ref, **summary, "results": []}, "tests_pass": False, "scope_check": "ok"},
                 note="no checks run: srt is absent; install srt, then resume",
             )
         results: list[CommandResult] = [
@@ -432,6 +467,7 @@ class DefaultExecutor:
             evidence={
                 "test_output": {**ref, **summary, "results": [r.summary() for r in results]},
                 "tests_pass": bool(results) and passed == len(results) and not moved,
+                "scope_check": "ok",
             },
             note=_join(*notes),
         )

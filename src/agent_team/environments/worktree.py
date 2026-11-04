@@ -13,6 +13,7 @@ under `.git/`. Dispose never discards work silently: uncommitted changes and
 commits past the base are saved as a patch first.
 """
 
+import fcntl
 import json
 import os
 import re
@@ -25,7 +26,7 @@ from typing import Literal
 
 from agent_team.environments import ports
 from agent_team.environments.include import copy_includes
-from agent_team.environments.lock import live_run_id
+from agent_team.environments.locks import live_run_ids
 from agent_team.environments.sandbox import Sandbox, effective_ceiling, prepare, settings_path
 from agent_team.runs.store import STATE_DIR, RunStore, UnknownRunError, check_state_dir_ignored, repo_root
 from agent_team.schemas.common import Autonomy
@@ -223,21 +224,33 @@ def create(
         raise AllocatorError(f"{root} has no commits; a worktree needs a base commit")
     base = head.stdout.strip()
     branch = f"{BRANCH_PREFIX}{run_id}"
-    slot = ports.next_slot((m.port_slot for m in list_worktrees(root)), spec.ports.block_size)
+    # Hold the allocator guard until metadata durably reserves the chosen slot.
+    # Path locks admit disjoint runs, so they cannot protect this shared resource.
+    dirs["state"].mkdir(exist_ok=True)
+    with (dirs["state"] / "ports.guard").open("a") as guard:
+        fcntl.flock(guard, fcntl.LOCK_EX)
+        if path.exists() or _meta_path(root, run_id).exists():
+            raise AllocatorError(f"run {run_id} already has a worktree at {path}")
+        slot = ports.next_slot((m.port_slot for m in list_worktrees(root)), spec.ports.block_size)
+        for key in ("worktrees", "meta"):
+            dirs[key].mkdir(parents=True, exist_ok=True)
+        _git(root, "worktree", "add", "--quiet", "-b", branch, str(path), base)
 
-    for key in ("worktrees", "meta"):
-        dirs[key].mkdir(parents=True, exist_ok=True)
-    _git(root, "worktree", "add", "--quiet", "-b", branch, str(path), base)
-
-    meta = WorktreeMeta(
-        run_id=run_id,
-        path=str(path),
-        branch=branch,
-        base_commit=base,
-        port_slot=slot,
-        created_at=datetime.now(UTC).isoformat(timespec="seconds"),
-    )
-    _meta_path(root, run_id).write_text(json.dumps(asdict(meta), indent=2) + "\n", encoding="utf-8")
+        meta = WorktreeMeta(
+            run_id=run_id,
+            path=str(path),
+            branch=branch,
+            base_commit=base,
+            port_slot=slot,
+            created_at=datetime.now(UTC).isoformat(timespec="seconds"),
+        )
+        meta_path = _meta_path(root, run_id)
+        temporary = meta_path.with_suffix(".tmp")
+        with temporary.open("w", encoding="utf-8") as handle:
+            handle.write(json.dumps(asdict(meta), indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, meta_path)
 
     copied, skipped = copy_includes(root, path, STATE_DIR)
     git_dir = Path(_git(root, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip())
@@ -380,13 +393,13 @@ def sweep(repo: Path) -> list[SweepResult]:
         for child in dirs["worktrees"].iterdir():
             if child.is_dir() and RUN_ID_RE.match(child.name):
                 known.setdefault(child.name, None)
-    live = live_run_id(dirs["state"])
+    live = live_run_ids(dirs["state"])
     store = RunStore.open(root, create=False)
     results: list[SweepResult] = []
     try:
         for run_id in sorted(known):
             meta = known[run_id]
-            if run_id == live:
+            if run_id in live:
                 results.append(SweepResult(run_id, "kept", "live run holds the lock"))
                 continue
             reason: str | None

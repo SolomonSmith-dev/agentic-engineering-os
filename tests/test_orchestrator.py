@@ -26,7 +26,7 @@ from typer.testing import CliRunner
 from agent_team import cli
 from agent_team.canonical import validate_tree
 from agent_team.cli import app
-from agent_team.environments import acquire, read_lock
+from agent_team.environments import acquire, live_run_ids
 from agent_team.orchestrator import (
     STEPS,
     DagError,
@@ -111,7 +111,7 @@ def happy() -> Script:
     return {
         "DISCOVERY": [ok(reproduction_command="uv run pytest tests/test_bug.py", reproduction_fails=True, reproduction_check={})],
         "IMPLEMENTATION": [ok(diff="--- a/app.py\n+++ b/app.py\n", claimed_changes=[])],
-        "TEST": [ok(test_output="1 passed", tests_pass=True)],
+        "TEST": [ok(test_output="1 passed", tests_pass=True, scope_check="ok")],
         "CODE_REVIEW": [ok(reviewer_verdict="approve", findings=[], review={})],
         "PR": [ok(pr="draft")],
     }
@@ -179,6 +179,73 @@ def test_bug_fix_yaml_validates_and_builds_a_linear_chain(dag) -> None:
     assert dag.agents == ("implementer", "independent-reviewer")
 
 
+def test_scope_evidence_and_edges_in_the_bug_fix_dag(dag) -> None:
+    assert dag.node("INTAKE").evidence == ("task", "scope") and dag.node("INTAKE").inputs == ("scope",)
+    assert dag.node("DISCOVERY").inputs == ("scope",)
+    assert dag.node("IMPLEMENTATION").inputs == ("plan", "reproduction_command", "findings", "scope")
+    test = dag.node("TEST")
+    assert test.evidence == ("test_output", "tests_pass", "scope_check")
+    assert test.inputs == ("reproduction_command", "diff", "scope")
+    assert [(e.kind, e.to_state, str(e.gate), e.max_traversals) for e in test.edges] == [
+        ("advance", "CODE_REVIEW", "tests_pass", None),
+        ("retry", "IMPLEMENTATION", "scope_check == violated", 1),
+        ("escalate", "PR", "scope_check == violated", None),
+    ]
+
+
+VIOLATION = {"file": "other.txt", "line": None, "requirement_id": "SCOPE", "severity": "blocker",
+             "fix": "revert the change to other.txt: outside the task's paths value.txt"}  # fmt: skip
+
+
+def violated() -> NodeResult:
+    return ok(test_output={"results": []}, tests_pass=False, scope_check="violated", findings=[VIOLATION])
+
+
+def test_a_scope_violation_retries_implementation_once_with_the_file_list(repo: Path, store: RunStore, dag) -> None:
+    script = happy()
+    script["TEST"] = [violated(), ok(test_output="1 passed", tests_pass=True, scope_check="ok")]
+    record, fake, _ = run_fake(store, dag, script)
+    assert record.outcome == "succeeded"
+    assert path(store, record.run_id).count("IMPLEMENTATION") == 2
+    states = fake.states()
+    assert states[states.index("TEST") : states.index("TEST") + 3] == ["TEST", "IMPLEMENTATION", "TEST"]
+    retry = [c for c in fake.calls if c.state == "IMPLEMENTATION"][1]
+    assert retry.attempt == 2 and retry.inputs["findings"] == [VIOLATION]
+
+
+def test_a_second_scope_violation_escalates_to_a_blocked_run_without_review(repo: Path, store: RunStore, dag) -> None:
+    script = happy()
+    script["TEST"] = [violated()]
+    script["PR"] = [ok(pr={"status": "not_opened", "reason": "no review", "branch": "b", "head": "h"})]
+    record, fake, _ = run_fake(store, dag, script)
+    assert record.outcome == "blocked"
+    assert "CODE_REVIEW" not in fake.states()
+    assert fake.states().count("IMPLEMENTATION") == 2 and fake.states().count("TEST") == 2
+    notes = [t.note or "" for t in store.transitions(record.run_id)]
+    assert any("escalated: scope_check == violated after 1/1 retries" in n for n in notes)
+
+
+def test_intake_seeds_the_default_scope_or_the_given_one() -> None:
+    from agent_team.orchestrator.executors import intake
+    from agent_team.orchestrator.scope import DEFAULT_SCOPE
+
+    base = dict(run_id="r", workflow="bug-fix", state="INTAKE", attempt=1, task="t")
+    assert intake(NodeInput(**base, inputs={})).evidence == {"task": "t", "scope": DEFAULT_SCOPE}
+    given = {"paths": ["a"], "allow_dependency_changes": False}
+    assert intake(NodeInput(**base, inputs={"scope": given})).evidence == {"task": "t", "scope": given}
+
+
+def test_a_seeded_scope_reaches_the_nodes_that_list_it_as_input(repo: Path, store: RunStore, dag) -> None:
+    scope = {"paths": ["value.txt"], "allow_dependency_changes": False}
+    fake = FakeExecutor(happy())
+    run = start(store, dag, "x", seed={"scope": scope}, echo=lambda _: None)
+    walk(store, dag, fake, run.run_id, echo=lambda _: None)
+    by_state = {c.state: c.inputs for c in fake.calls}
+    assert by_state["INTAKE"]["scope"] == scope and by_state["DISCOVERY"]["scope"] == scope
+    assert by_state["IMPLEMENTATION"]["scope"] == scope and by_state["TEST"]["scope"] == scope
+    assert "scope" not in by_state["CODE_REVIEW"], "the reviewer's inputs are unchanged"
+
+
 def _spec(**changes: Any) -> WorkflowSpec:
     data = yaml.safe_load(BUG_FIX.read_text())
     data.update(changes)
@@ -199,8 +266,8 @@ def _transitions(*replace: tuple[int, dict[str, Any]], drop: int | None = None) 
     [
         (_transitions((2, {"from": "PLAN", "to": "TEST"})), "only the next state is reachable"),
         (_transitions(drop=0), "INTAKE needs exactly one edge to the next state"),
-        (_transitions((6, {"from": "CODE_REVIEW", "to": "IMPLEMENTATION", "max_traversals": 1})), "retry edge"),
-        (_transitions(drop=7), "no escalate edge"),
+        (_transitions((8, {"from": "CODE_REVIEW", "to": "IMPLEMENTATION", "max_traversals": 1})), "retry edge"),
+        (_transitions(drop=9), "no escalate edge"),
         (_transitions((4, {"from": "TEST", "to": "CODE_REVIEW", "gate": "reviewer_verdict == approve"})), "does not produce"),
         (_transitions((0, {"from": "INTAKE", "to": "DISCOVERY", "escalate": True})), "escalate edge goes forward"),
     ],
@@ -297,7 +364,7 @@ def test_escalate_verdict_skips_the_retry(store: RunStore, dag) -> None:
 
 def test_failed_gate_routes_to_blocked(store: RunStore, dag) -> None:
     script = happy()
-    script["TEST"] = [ok(test_output="1 failed", tests_pass=False)]
+    script["TEST"] = [ok(test_output="1 failed", tests_pass=False, scope_check="ok")]
     record, fake, _ = run_fake(store, dag, script)
     assert path(store, record.run_id)[-2:] == ["TEST", "BLOCKED"]
     assert record.outcome == "blocked" and record.ended_at is not None
@@ -368,7 +435,7 @@ def test_resume_after_an_interrupt_reenters_the_checkpoint(repo: Path) -> None:
     with pytest.raises(KeyboardInterrupt):
         run_workflow(repo, CANONICAL, "bug-fix", "Fix it.", executor_factory=factory_for(first), echo=lines.append)
     assert lines[-1].startswith("interrupted in IMPLEMENTATION; the checkpoint is kept")
-    assert read_lock(repo / ".agent-team") is None, "the lock is released on interrupt"
+    assert live_run_ids(repo / ".agent-team") == set(), "the lock is released on interrupt"
     with RunStore.open(repo, create=False) as store:
         [run] = store.list_runs()
         assert run.ended_at is None and run.state == "IMPLEMENTATION"
@@ -397,7 +464,7 @@ def _dead_pid() -> int:
 
 def test_resume_takes_over_a_killed_runs_lock_and_logs_it(repo: Path) -> None:
     script = happy()
-    script["TEST"] = [KeyboardInterrupt(), ok(test_output="ok", tests_pass=True)]
+    script["TEST"] = [KeyboardInterrupt(), ok(test_output="ok", tests_pass=True, scope_check="ok")]
     with pytest.raises(KeyboardInterrupt):
         run_workflow(repo, CANONICAL, "bug-fix", "Fix it.", executor_factory=factory_for(FakeExecutor(script)), echo=lambda _: None)
     with RunStore.open(repo, create=False) as store:
@@ -508,7 +575,7 @@ def test_reviewer_node_runs_through_run_agent(repo: Path, tmp_path: Path, monkey
     assert "## diff" in seen["stdin"] and "## test_output" in seen["stdin"] and "## plan" in seen["stdin"]
     assert "reproduction_fails" not in seen["stdin"], "only the reviewer node's inputs"
     assert any(line.startswith("    run ") for line in lines), "the child run's lines are nested"
-    assert read_lock(repo / ".agent-team") is None
+    assert live_run_ids(repo / ".agent-team") == set()
 
 
 def test_missing_agent_at_run_time_blocks(repo: Path, dag) -> None:
@@ -574,7 +641,7 @@ def test_cli_workflow_run_interrupt_and_resume(repo: Path, claude_on_path, monke
 
 def test_cli_blocked_workflow_exits_1(repo: Path, claude_on_path, monkeypatch: pytest.MonkeyPatch) -> None:
     script = happy()
-    script["TEST"] = [ok(test_output="1 failed", tests_pass=False)]
+    script["TEST"] = [ok(test_output="1 failed", tests_pass=False, scope_check="ok")]
     monkeypatch.setattr(cli, "default_executor_factory", lambda **_: factory_for(FakeExecutor(script)))
     result = runner.invoke(app, ["run", "--workflow", "bug-fix", "--repo", str(repo), "--canonical", str(CANONICAL), "Fix it."])
     assert result.exit_code == 1

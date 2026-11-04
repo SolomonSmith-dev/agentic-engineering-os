@@ -22,8 +22,8 @@ from agent_team.environments import (
     create,
     dispose,
     list_worktrees,
-    live_run_id,
-    read_lock,
+    live_run_ids,
+    read_table,
     release,
     sweep,
 )
@@ -259,23 +259,23 @@ def test_dispose_unknown_run_fails(repo: Path) -> None:
 
 
 def test_lock_is_exclusive_while_holder_lives(repo: Path) -> None:
-    assert acquire(state(repo), "run-1") is None
+    assert acquire(state(repo), "run-1") == []
     with pytest.raises(LockHeldError, match="run-1"):
         acquire(state(repo), "run-2")
-    assert live_run_id(state(repo)) == "run-1"
+    assert live_run_ids(state(repo)) == {"run-1"}
     assert release(state(repo), "run-2") is False, "only the holder releases"
     assert release(state(repo), "run-1") is True
-    assert read_lock(state(repo)) is None
+    assert read_table(state(repo)) == []
 
 
 def test_dead_pid_lock_is_taken_over_and_reported(repo: Path) -> None:
     dead = subprocess.Popen(["true"])
     dead.wait()
     acquire(state(repo), "run-old", pid=dead.pid)
-    assert live_run_id(state(repo)) is None
-    replaced = acquire(state(repo), "run-new")
-    assert replaced is not None and replaced.run_id == "run-old" and replaced.pid == dead.pid
-    assert live_run_id(state(repo)) == "run-new"
+    assert live_run_ids(state(repo)) == set()
+    [replaced] = acquire(state(repo), "run-new")
+    assert replaced.run_id == "run-old" and replaced.pid == dead.pid
+    assert live_run_ids(state(repo)) == {"run-new"}
 
 
 def _race_for_lock(state_dir: str, run_id: str, holder_pid: int, start, results) -> None:  # noqa: ANN001
@@ -304,7 +304,7 @@ def test_stale_lock_takeover_has_one_winner(repo: Path) -> None:
         proc.join(timeout=30)
     winners = [w for w in (results.get(timeout=5) for _ in racers) if w is not None]
     assert len(winners) == 1
-    assert live_run_id(state(repo)) == winners[0]
+    assert live_run_ids(state(repo)) == {winners[0]}
 
 
 def test_lock_from_another_host_is_never_taken_over(repo: Path) -> None:
@@ -312,15 +312,18 @@ def test_lock_from_another_host_is_never_taken_over(repo: Path) -> None:
     (state(repo) / "lock").write_text(
         json.dumps({"run_id": "remote", "pid": 1, "host": "some-other-host", "acquired_at": ""}), encoding="utf-8"
     )
-    with pytest.raises(LockHeldError, match="some-other-host"):
+    with pytest.raises(LockHeldError, match="run remote holds"):
         acquire(state(repo), "run-1")
 
 
-def test_unreadable_lock_is_treated_as_stale(repo: Path) -> None:
+def test_unreadable_lock_refuses_without_replacing_state(repo: Path) -> None:
     state(repo).mkdir()
-    (state(repo) / "lock").write_text("not json", encoding="utf-8")
-    replaced = acquire(state(repo), "run-1")
-    assert replaced is not None and replaced.run_id == "<unreadable>"
+    lock = state(repo) / "lock"
+    lock.write_text("not json", encoding="utf-8")
+    with pytest.raises(LockHeldError):
+        acquire(state(repo), "run-1")
+    assert lock.read_text(encoding="utf-8") == "not json"
+    assert not (state(repo) / "locks.json").exists()
 
 
 # --- sweep --------------------------------------------------------------------
@@ -396,3 +399,54 @@ def test_env_sweep_refuses_unignored_state_dir(repo: Path) -> None:
     result = runner.invoke(app, ["env", "sweep", "--repo", str(repo)])
     assert result.exit_code == 2
     assert "not gitignored" in result.output
+
+
+def _allocate_paused(repo, run_id, entered, proceed, ready, done, results):
+    from agent_team.environments import worktree
+
+    original = worktree._git
+
+    def paused(root, *args, **kwargs):
+        if args[:2] == ("worktree", "add"):
+            entered.set()
+            if not proceed.wait(15):
+                raise RuntimeError("allocation pause timed out")
+        return original(root, *args, **kwargs)
+
+    if entered is not None:
+        worktree._git = paused
+    try:
+        acquire(repo / ".agent-team", run_id, [run_id])
+        ready.set()
+        env = create(repo, run_id, spec())
+        results.put((run_id, env.sandbox.port_offset))
+    except Exception as exc:
+        results.put((run_id, repr(exc)))
+    finally:
+        release(repo / ".agent-team", run_id)
+        done.set()
+
+
+def test_concurrent_disjoint_allocations_reserve_distinct_port_offsets(repo: Path) -> None:
+    ctx = multiprocessing.get_context("spawn")
+    entered, proceed, first_done, second_done = [ctx.Event() for _ in range(4)]
+    first_ready, second_ready = ctx.Event(), ctx.Event()
+    results = ctx.Queue()
+    first = ctx.Process(target=_allocate_paused, args=(repo, "parallel-a", entered, proceed, first_ready, first_done, results))
+    second = ctx.Process(target=_allocate_paused, args=(repo, "parallel-b", None, proceed, second_ready, second_done, results))
+    first.start()
+    try:
+        assert entered.wait(10), "first allocator did not reach worktree creation"
+        second.start()
+        assert second_ready.wait(10), "disjoint workflow could not acquire its path lock"
+        # Without serialization B publishes slot 1 while A is paused after selecting it.
+        second_done.wait(2)
+    finally:
+        proceed.set()
+        first.join(15)
+        if second.pid is not None:
+            second.join(15)
+    assert first.exitcode == second.exitcode == 0
+    allocated = [results.get(timeout=2), results.get(timeout=2)]
+    assert sorted(value for _, value in allocated) == [100, 200], allocated
+    assert sorted(m.port_slot for m in list_worktrees(repo)) == [1, 2]

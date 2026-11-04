@@ -29,8 +29,7 @@ from typer.testing import CliRunner
 
 from agent_team import cli
 from agent_team.cli import app
-from agent_team.environments import acquire, read_lock, release
-from agent_team.environments.lock import LockHeldError
+from agent_team.environments import LockHeldError, acquire, live_run_ids, release
 from agent_team.environments.sandbox import Sandbox
 from agent_team.environments.worktree import AllocatorError
 from agent_team.orchestrator import (
@@ -222,6 +221,78 @@ def test_test_step_refuses_a_worktree_at_another_commit_or_dirty(repo: Path) -> 
     assert result.blocked == "the worktree has uncommitted changes the diff does not show"
 
 
+def at_test_scoped(head: str, scope: object = None) -> NodeInput:
+    inputs: dict[str, object] = {"diff": {"head": head}}
+    if scope is not None:
+        inputs["scope"] = scope
+    return NodeInput(run_id=RUN, workflow="bug-fix", state="TEST", attempt=1, task=TASK, inputs=inputs)
+
+
+def worktree_commit(worktree: Path, name: str, text: str = "x\n") -> str:
+    (worktree / name).write_text(text, encoding="utf-8")
+    git(worktree, "add", name)
+    git(worktree, "commit", "-q", "-m", f"add {name}")
+    return git(worktree, "rev-parse", "HEAD")
+
+
+def test_scope_violation_fails_the_gate_before_any_command_runs(repo: Path, no_srt: None) -> None:
+    marker = repo / "ran-a-command"
+    ex = executor(repo, test_commands=(f"touch {marker}",))
+    node = load_dag(ex.canonical, "bug-fix", "default").node("TEST")
+    ex(node, at_test_scoped("pending"))  # creates the worktree
+    worktree = repo / ".agent-team" / "worktrees" / RUN
+    worktree_commit(worktree, "value.txt", "fixed\n")
+    head = worktree_commit(worktree, "other.txt")
+    scope = {"paths": ["value.txt"], "allow_dependency_changes": False}
+    result = ex(node, at_test_scoped(head, scope))
+    assert result.blocked is None
+    evidence = result.evidence
+    assert evidence["scope_check"] == "violated" and evidence["tests_pass"] is False
+    assert evidence["test_output"]["results"] == [] and evidence["test_output"]["skipped"] == ["all: scope violated"]
+    assert evidence["test_output"]["head"] == head
+    [finding] = evidence["findings"]
+    assert finding["file"] == "other.txt" and finding["requirement_id"] == "SCOPE" and "value.txt" in finding["fix"]
+    assert result.note == "scope violated: 1 file(s) outside the task's paths"
+    assert not marker.exists(), "no command ran"
+    saved = json.loads((repo / evidence["test_output"]["path"]).read_text())
+    assert evidence["test_output"]["path"].endswith("scope-1.json") and saved["outside"] == ["other.txt"]
+
+
+def test_tooling_state_fails_even_the_default_scope(repo: Path, no_srt: None) -> None:
+    ex = executor(repo)
+    node = load_dag(ex.canonical, "bug-fix", "default").node("TEST")
+    ex(node, at_test_scoped("pending"))
+    worktree = repo / ".agent-team" / "worktrees" / RUN
+    (worktree / ".claude").mkdir()
+    head = worktree_commit(worktree, ".claude/settings.json", "{}\n")
+    result = ex(node, at_test_scoped(head))
+    assert result.evidence["scope_check"] == "violated"
+    assert result.evidence["findings"][0]["fix"].endswith("local tooling state is never committed")
+
+
+def test_an_in_scope_diff_reports_scope_ok_and_tests_as_before(repo: Path, no_srt: None) -> None:
+    ex = executor(repo)
+    node = load_dag(ex.canonical, "bug-fix", "default").node("TEST")
+    ex(node, at_test_scoped("pending"))
+    worktree = repo / ".agent-team" / "worktrees" / RUN
+    head = worktree_commit(worktree, "value.txt", "fixed\n")
+    for scope in (None, {"paths": ["value.txt"], "allow_dependency_changes": False}):
+        result = ex(node, at_test_scoped(head, scope))
+        assert result.evidence["scope_check"] == "ok" and "findings" not in result.evidence
+        assert result.evidence["tests_pass"] is False and "srt is absent" in (result.note or "")
+        assert set(node.evidence) <= set(result.evidence), "TEST leaves every declared evidence key"
+
+
+def test_a_scope_check_that_cannot_run_blocks(repo: Path, no_srt: None) -> None:
+    ex = executor(repo)
+    node = load_dag(ex.canonical, "bug-fix", "default").node("TEST")
+    ex(node, at_test_scoped("pending"))
+    worktree = repo / ".agent-team" / "worktrees" / RUN
+    head = worktree_commit(worktree, "value.txt", "fixed\n")
+    result = ex(node, at_test_scoped(head, {"paths": ["/absolute"], "allow_dependency_changes": False}))
+    assert result.blocked and result.blocked.startswith("scope check failed:")
+
+
 def test_a_check_that_commits_fails_the_gate_and_is_rolled_back(repo: Path, srt: str) -> None:
     ex = executor(repo, test_commands=("echo moved >> value.txt && git commit -qam moved",))
     node = load_dag(ex.canonical, "bug-fix", "default").node("TEST")
@@ -261,7 +332,7 @@ def test_an_artifact_outside_the_artifacts_dir_is_never_inlined(repo: Path) -> N
     assert RunStore.open(repo, create=False) is None, "no child run was started"
 
 
-def test_an_old_claude_blocks_the_node_and_the_lock_comes_back(repo: Path, tmp_path: Path) -> None:
+def test_an_old_claude_blocks_the_node_and_the_lock_stays_with_the_workflow(repo: Path, tmp_path: Path) -> None:
     old = tmp_path / "old-claude"
     old.write_text(f"#!{sys.executable}\nprint('1.0.0 (Claude Code)')\n", encoding="utf-8")
     old.chmod(0o755)
@@ -272,8 +343,7 @@ def test_an_old_claude_blocks_the_node_and_the_lock_comes_back(repo: Path, tmp_p
         given = NodeInput(run_id=RUN, workflow="bug-fix", state="CODE_REVIEW", attempt=1, task=TASK, inputs={})
         result = ex(load_dag(ex.canonical, "bug-fix", "default").node("CODE_REVIEW"), given)
         assert result.blocked and result.blocked.startswith("agent independent-reviewer: claude 1.0.0 is older than")
-        lock = read_lock(state_dir)
-        assert lock is not None and lock.run_id == RUN, "the workflow takes its lock back"
+        assert live_run_ids(state_dir) == {RUN}, "the child never touched the workflow's lock"
     finally:
         release(state_dir, RUN)
 
@@ -460,10 +530,8 @@ def test_a_live_lock_blocks_a_new_workflow_run(repo: Path) -> None:
     try:
         with pytest.raises(LockHeldError):
             run_workflow(repo, CANONICAL, "bug-fix", TASK, executor_factory=lambda c: executor(repo), echo=lambda _: None)
-        with RunStore.open(repo, create=False) as store:
-            [run] = store.list_runs()
-            assert run.outcome == "blocked" and store.transitions(run.run_id)[-1].to_state == "BLOCKED"
-        assert read_lock(state_dir).run_id == "20261024-080000-000000", "the holder's lock is untouched"
+        assert RunStore.open(repo, create=False) is None, "refused before the run record exists"
+        assert live_run_ids(state_dir) == {"20261024-080000-000000"}, "the holder's lock is untouched"
     finally:
         release(state_dir, "20261024-080000-000000")
 

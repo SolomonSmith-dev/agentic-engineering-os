@@ -34,7 +34,7 @@ from agent_team.adapters.claude.invoke import RUNTIME, build_invocation, check_v
 from agent_team.adapters.codex.invoke import API_DOMAINS
 from agent_team.adapters.codex.invoke import auth_mode as codex_auth_mode
 from agent_team.canonical import Document, validate_tree
-from agent_team.environments import acquire, create, effective_ceiling, release, srt_path
+from agent_team.environments import LockEntry, acquire, create, effective_ceiling, release, srt_path
 from agent_team.environments.sandbox import extend_settings
 from agent_team.environments.worktree import Environment
 from agent_team.focus import brief
@@ -126,6 +126,7 @@ def run_agent(
     state: RunState | None = None,
     after: AfterAgent | None = None,
     focus: bool = True,
+    lock: bool = True,
     echo: Callable[[str], None] = print,
 ) -> tuple[RunRecord, AdapterResult]:
     """Run one agent against `repo` and return its run record and normalized result.
@@ -134,6 +135,8 @@ def run_agent(
     overrides it with another registry entry on that runtime. `environment` reuses an
     allocated worktree instead of creating one (the caller owns it), `base_commit` is the
     commit a new worktree starts from, and `state` overrides the agent's first state trigger.
+    `lock=False` means the caller (a workflow) already holds this repository's lock: the run
+    neither takes nor releases one.
     """
     canonical = load_canonical(canonical_dir)
     agent_doc = canonical.one("agent", agent_name)
@@ -178,12 +181,14 @@ def run_agent(
         run_id = run.run_id
         echo(f"run {run_id}")
         echo(status_line(store.transitions(run_id)[-1]))
-        try:
-            replaced = acquire(state_dir, run_id)
-        except Exception as exc:
-            echo(status_line(store.transition(run_id, "BLOCKED", note=str(exc))))
-            store.finish_run(run_id, "blocked")
-            raise
+        replaced: list[LockEntry] = []
+        if lock:
+            try:
+                replaced = acquire(state_dir, run_id)
+            except Exception as exc:
+                echo(status_line(store.transition(run_id, "BLOCKED", note=str(exc))))
+                store.finish_run(run_id, "blocked")
+                raise
         try:
             ceiling = requested_autonomy(agent.max_autonomy, policy.autonomy_ceiling.get(agent.name, policy.default_autonomy))
             if environment is None:
@@ -199,7 +204,7 @@ def run_agent(
                     store, run_id, root, state_dir, environment, agent, agent_doc.body, skills, policy,
                     resolved_model=resolved.model, price=registry.models[resolved.model].cost,
                     notes=[environment.note(env_spec.name), resolved.note()]
-                    + ([f"took over a stale lock from run {replaced.run_id} (pid {replaced.pid})"] if replaced else []),
+                    + [f"took over a stale lock from run {e.run_id} (pid {e.pid})" for e in replaced],
                     codex=codex, prompt=prompt, max_budget_usd=max_budget_usd, timeout_s=timeout_s,
                     test_commands=test_commands, redaction=redaction, state=work_state, echo=echo,
                 )  # fmt: skip
@@ -229,8 +234,7 @@ def run_agent(
                 # The hook is a tripwire; srt is what keeps a Bash command from reading .env or a key file.
                 extend_settings(environment.sandbox, deny_read=compiled.deny_read)
             notes = [environment.note(env_spec.name), resolved.note()]
-            if replaced is not None:
-                notes.append(f"took over a stale lock from run {replaced.run_id} (pid {replaced.pid})")
+            notes.extend(f"took over a stale lock from run {e.run_id} (pid {e.pid})" for e in replaced)
             if compiled.permissions.dropped:
                 notes.append("dropped: " + "; ".join(compiled.permissions.dropped))
             echo(status_line(store.transition(run_id, work_state, note=" | ".join(notes))))
@@ -266,7 +270,8 @@ def run_agent(
                 store.finish_run(run_id, "failed")
             raise
         finally:
-            release(state_dir, run_id)
+            if lock:
+                release(state_dir, run_id)
         return store.get_run(run_id), result
 
 
