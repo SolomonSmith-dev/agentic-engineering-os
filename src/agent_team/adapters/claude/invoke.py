@@ -297,11 +297,17 @@ def execute(
         timed_out = threading.Event()
         halted: str | None = None
 
-        def _killpg() -> None:
+        def _killpg(*, sweep: bool = False) -> None:
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+            except PermissionError:
+                # macOS answers EPERM for a group whose members are all zombies. That is only
+                # harmless on a sweep after proc.wait(); on a first kill it means a live worker
+                # could not be stopped, so it must surface.
+                if not sweep:
+                    raise
 
         def _kill() -> None:
             timed_out.set()
@@ -328,11 +334,11 @@ def execute(
                 # The watch (a trace write, a price) or the read failed: never leave the worker running.
                 _killpg()
                 proc.wait()
-                _killpg()  # again: a child forked while the first signal landed is still in the group
+                _killpg(sweep=True)  # again: a child forked while the first signal landed is still in the group
                 raise
             exit_code = proc.wait()
             if halted is not None or timed_out.is_set():
-                _killpg()  # sweep a child forked while the kill landed
+                _killpg(sweep=True)  # sweep a child forked while the kill landed
         finally:
             timer.cancel()
     stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
