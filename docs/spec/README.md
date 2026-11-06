@@ -14,3 +14,4 @@ One page per canonical kind, generated from the JSON Schemas that `agent-team sc
 | `policy` | `canonical/policies/*.yaml` | [policy.md](policy.md) |
 | `environment` | `canonical/environments/*.yaml` | [environment.md](environment.md) |
 | `registry` | `routing/registry.yaml` | [registry.md](registry.md) |
+| `task` | `a Ledger task file, passed with run --task-file` | [task.md](task.md) |

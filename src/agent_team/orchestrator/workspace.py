@@ -76,6 +76,11 @@ def git(
     return result
 
 
+def git_bytes(cwd: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
+    """Same pinned invocation as `git`, but raw bytes: text mode would rewrite lone CR into LF."""
+    return subprocess.run(["git", "-C", str(cwd), *SAFE_GIT, *args], capture_output=True, check=False)
+
+
 def pinned_env(env: Environment) -> dict[str, str]:
     """Git's repository paths for the worktree, from the root's common .git; nothing read from the worktree."""
     if env.git_dir is None:
