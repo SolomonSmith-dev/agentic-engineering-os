@@ -51,13 +51,13 @@
 | `src/agent_team/orchestrator/scope.py` | create | scope check on the run diff |
 | `src/agent_team/budget.py` | create | `Limits`, `Usage`, `Halt`, `BudgetMeter`, `StreamWatch` |
 | `src/agent_team/runs/trace.py` | create | append-only `trace.jsonl` |
-| `src/agent_team/adapters/codex/auth.py` | create | Codex auth detection, ChatGPT-login sandbox extras |
+| `src/agent_team/adapters/codex/login_proxy.py` | landed (#45) | ChatGPT login held by a host-side proxy; the sandbox gets a per-run key |
 | `src/agent_team/eval/replay.py` | create | replay task kind: PR facts, verifier extraction, replay-check |
 | `src/agent_team/cli.py` | modify | `validate --lint`, `task validate`, `run --task-file`, `trace --json`, exit 3, `eval replay-add`, `eval replay-check`, repeatable `--tasks-dir` |
-| `src/agent_team/run_agent.py` | modify | `lock`, `meter`, `model_class` params; Codex auth modes |
+| `src/agent_team/run_agent.py` | modify | `lock`, `meter`, `model_class` params (Codex login mode landed in #45) |
 | `src/agent_team/orchestrator/{run,machine,executors,workspace,pr}.py` | modify | locks before start, seed evidence, halts, trace, scope gate, reviewer fallback, neutral review commit |
-| `src/agent_team/adapters/{claude,codex}/invoke.py` | modify | `watch` hook, usage extraction, ChatGPT auth |
-| `src/agent_team/environments/{sandbox,worktree,__init__}.py` | modify | `extend_settings(allow_read, only_domains)`, live run ids |
+| `src/agent_team/adapters/{claude,codex}/invoke.py` | modify | `watch` hook, usage extraction |
+| `src/agent_team/environments/{sandbox,worktree,__init__}.py` | modify | live run ids |
 | `src/agent_team/runs/store.py`, `schemas/runs.py`, `runs/render.py` | modify | migration 3: `tokens_total`, `halted`; outcome `halted_budget` |
 | `src/agent_team/schemas/{registry,eval,bootstrap,__init__,docs}.py`, `routing.py` | modify | cache prices, replay fields, `max_concurrent_runs`, `task` kind |
 | `canonical/workflows/bug-fix.yaml`, `canonical/agents/implementer.md`, `routing/registry.yaml` | modify | scope evidence and edges; acceptance test as reproduction; Codex default + prices |
@@ -65,7 +65,7 @@
 | `evals/tasks/arda-pr-{73,72,60}.yaml` | create | public replay tasks |
 | `.gitignore` | modify | `evals/private/` |
 | `tests/engine_fakes.py` | create | fake claude/codex emitting usage events; priced registry fixture |
-| `tests/test_{task_file,task_audit,lint,locks,scope,budget,trace,task_run,codex_auth,replay}.py` | create | one per unit |
+| `tests/test_{task_file,task_audit,lint,locks,scope,budget,trace,task_run,replay}.py` | create | one per unit |
 
 ---
 
@@ -73,7 +73,7 @@
 
 ### Task 0: Land PR #42 (tracked `.env` templates readable to test runners)
 
-Independent of everything else. Must merge before M5 (Task 21 extends the `allowRead` key this PR introduces).
+Independent of everything else. Landed as #42. M5 no longer depends on it: Task 21 reads no login file inside srt.
 
 **Files:** none new; branch `fix-env-template-read` (`src/agent_team/environments/sandbox.py`, `tests/test_sandbox.py`).
 
@@ -1027,7 +1027,7 @@ Independent of Tasks 16, 17 and 19.
 
 ## M5: Codex reviewer on the ChatGPT login, Opus fallback, prices, live check (one PR: "Codex reviewer by default, Opus fallback, list prices")
 
-Parallelism: Tasks 20 and 21 in parallel. Task 22 after both. Task 23 last. Requires Task 0 merged.
+Parallelism: Task 21 is done (#45). Task 22 after Task 20. Task 23 last.
 
 ### Task 20: Registry: Codex for `independent`, Opus on claude, list prices
 
@@ -1045,53 +1045,25 @@ Parallelism: Tasks 20 and 21 in parallel. Task 22 after both. Task 23 last. Requ
 - [ ] **Step 2:** Run: FAIL. **Step 3:** Fetch the two pricing pages (WebFetch), edit the YAML. **Step 4:** `uv run pytest -q tests/test_routing.py tests/test_eval.py && uv run agent-team validate --lint`: PASS (update eval tests that assert the treatment reviewer model; the eval passes no `codex`, so its reviewer is still Opus).
 - [ ] **Step 5: Commit**: `git commit -m "Registry: independent class on Codex, Opus on claude, dated list prices"`
 
-### Task 21: Codex auth: ChatGPT login, reviewer-only `auth.json`, OpenAI-only network
+### Task 21: Codex auth: ChatGPT login through a host-side proxy (landed in #45)
 
-**Files:**
-- Create: `src/agent_team/adapters/codex/auth.py`
-- Modify: `src/agent_team/adapters/codex/invoke.py:51-150` (`AuthMode`, `auth_mode`, `has_auth`, `build_invocation`), `src/agent_team/environments/sandbox.py:189-203` (`extend_settings`), `src/agent_team/run_agent.py:282-353` (`_run_codex`), `src/agent_team/cli.py:356-358` (message)
-- Test: `tests/test_codex_auth.py`, `tests/test_sandbox.py` (append; real-srt case marked `srt`)
+Decided by Solomon on 2026-11-07, replacing the reviewer-only `auth.json` read this task first planned. With that read, a hijacked reviewer command could take the ChatGPT token (access and refresh), which outlives the run. With the proxy, the login never enters the sandbox: the most a command can get is a per-run key that dies with the run.
 
-**Interfaces:**
-- Consumes: `allowRead` from Task 0.
-- Produces:
-  - `auth.LOGIN_FILE = Path(".codex") / "auth.json"`; `auth.CHATGPT_DOMAINS: tuple[str, ...] = ("chatgpt.com", "auth.openai.com", "api.openai.com")` marked `# unverified until the live check (Task 23)`.
-  - `CodexAuthMode = Literal["api_key", "chatgpt"]`; `@dataclass(frozen=True) class CodexAuth: mode: CodexAuthMode; login_file: Path | None = None`.
-  - `detect(env: Mapping[str, str], home: Path) -> CodexAuth | None`: `api_key` when `CODEX_API_KEY` is non-blank (preferred); else `chatgpt` when `home / LOGIN_FILE` is a regular file (not a symlink) and non-empty; never reads its contents.
-  - `invoke.auth_mode(env: dict[str, str], home: Path | None = None) -> AuthMode` and `has_auth(codex: str, base_env: dict[str, str], home: Path | None = None) -> bool` delegate to `detect`.
-  - `build_invocation(..., home: Path | None = None)`: `chatgpt` mode sets `CODEX_HOME=str(home / ".codex")` and passes no key; `api_key` mode unchanged.
-  - `extend_settings(sandbox, *, deny_read=(), allowed_domains=(), allow_read: Sequence[str] = (), only_domains: Sequence[str] | None = None)`: `allow_read` appends to `filesystem.allowRead`; `only_domains` replaces `network.allowedDomains`.
-  - `_run_codex`: `chatgpt` mode calls `extend_settings(sandbox, allow_read=[str(home / LOGIN_FILE)], only_domains=CHATGPT_DOMAINS)`; `api_key` mode keeps `API_DOMAINS` added to the environment's list. The implementer's sandbox never gets the `allowRead` entry.
+**Files (as landed):**
+- Create: `src/agent_team/adapters/codex/login_proxy.py`
+- Modify: `src/agent_team/adapters/codex/invoke.py` (`AuthMode`, `auth_mode`, `has_auth`, `NO_AUTH`, `build_invocation(..., proxy=)`), `src/agent_team/run_agent.py` (`_run_codex`, `_run_codex_session`), `src/agent_team/cli.py` (message)
+- Test: `tests/test_codex_login.py` (proxy units and a real-srt end-to-end run), `tests/test_codex_edges.py` (auth checks take a temp home)
 
-- [ ] **Step 1: Failing tests**
+**Interfaces (as landed):**
+- `login_proxy.login_path(env, home) -> Path`: `$CODEX_HOME/auth.json` when `CODEX_HOME` is absolute, else `home/.codex/auth.json`.
+- `login_proxy.has_login(path) -> bool`: true when the file holds ChatGPT tokens (access and refresh). Presence only; no value leaves the module.
+- `invoke.AuthMode = Literal["api_key", "login"]`; `auth_mode(env, home=None)`: `api_key` when `CODEX_API_KEY` is non-blank (preferred), else `login` when `has_login`, else `CodexUnavailableError(NO_AUTH)`. `has_auth(codex, base_env, home=None)` wraps it.
+- `login_proxy.LoginProxy(path, *, upstream=None)`: `.start()` binds `127.0.0.1:0` outside srt; `.run_key`, `.base_url`, `.allowed_domain` (`127.0.0.1:<port>`), `.close()`. Raises `LoginError` when there is no login or the access token expires within `EXPIRY_MARGIN_S` (10 minutes).
+- The proxy checks the run key, forwards only `/backend-api/codex/` to chatgpt.com, sets `Authorization` and `chatgpt-account-id` from the login, answers a WebSocket upgrade with 426, and bounds unauthenticated connections (`MAX_HANDLERS`, `CLIENT_TIMEOUT_S`, `MAX_BODY_BYTES`). It never refreshes or writes the login: on a 401 it re-reads `auth.json` once, else passes the 401 on with "run `codex login` again".
+- `build_invocation(..., proxy=)`: login mode passes `CODEX_API_KEY=<run key>` and `--config openai_base_url=<proxy>/backend-api/codex`, and runs Codex under `env -u NO_PROXY -u no_proxy` so its request goes through srt's filter. `CODEX_HOME` stays the empty per-run `codex-home/`; `~/.codex` stays read-denied (#43).
+- `_run_codex`: login mode starts the proxy, adds only `proxy.allowed_domain` to srt `allowedDomains` (no OpenAI host), and closes it when the run ends. `extend_settings` is unchanged: no `allow_read`, no `only_domains`.
 
-```python
-def test_api_key_wins_over_the_login(tmp_path):
-    login(tmp_path)  # writes tmp_path/.codex/auth.json
-    assert detect({"CODEX_API_KEY": "k"}, tmp_path).mode == "api_key"
-    assert detect({}, tmp_path) == CodexAuth("chatgpt", tmp_path / ".codex" / "auth.json")
-
-def test_a_symlinked_or_empty_login_is_not_auth(tmp_path):
-    (tmp_path / ".codex").mkdir(); (tmp_path / ".codex" / "auth.json").symlink_to("/etc/hosts")
-    assert detect({}, tmp_path) is None
-
-def test_chatgpt_reviewer_settings(tmp_path, reviewer_sandbox):
-    run_codex_settings = settings_after_codex_prepare(reviewer_sandbox, home=tmp_path, mode="chatgpt")
-    assert run_codex_settings["filesystem"]["allowRead"][-1] == str(tmp_path / ".codex" / "auth.json")
-    assert run_codex_settings["network"]["allowedDomains"] == list(CHATGPT_DOMAINS)
-
-@pytest.mark.srt
-def test_only_the_login_file_is_readable_under_srt(tmp_path, srt):
-    # HOME=tmp_path with .codex/auth.json and .codex/config.toml; reviewer settings as above
-    assert sandboxed_cat(srt, tmp_path / ".codex" / "auth.json").returncode == 0
-    assert sandboxed_cat(srt, tmp_path / ".codex" / "config.toml").returncode != 0
-
-def test_implementer_sandbox_never_allows_the_login(repo, fakes, srt):
-    # after a workflow run, no implementer settings file under .agent-team/sandbox/ mentions auth.json
-```
-
-- [ ] **Step 2 to 4:** Run (FAIL), implement, run `uv run pytest -q tests/test_codex_auth.py tests/test_sandbox.py tests/test_codex_adapter.py tests/test_codex_edges.py` (PASS).
-- [ ] **Step 5: Commit**: `git commit -m "Codex on the ChatGPT login: reviewer-only auth.json read, OpenAI-only network"`
+- [x] **Done in #45.** `AGENT_TEAM_REQUIRE_SRT=1 uv run pytest -q` green on ubuntu and macos. Not verified until Task 23: that the ChatGPT backend accepts Codex's API-key-mode request through the proxy, and that Codex honors `HTTP_PROXY` once `NO_PROXY` is unset.
 
 ### Task 22: Reviewer runtime choice and the Opus fallback
 
@@ -1103,7 +1075,7 @@ def test_implementer_sandbox_never_allows_the_login(repo, fakes, srt):
 - Consumes: Tasks 20, 21; `CODEX_AGENTS` (`run_agent.py:54`).
 - Produces:
   - `DefaultExecutor.codex: str | None = None`.
-  - `DefaultExecutor._reviewer_runtime(self) -> tuple[Runtime, str | None]`: `("codex", None)` when `codex` is set, `check_flags` passes, `auth.detect(os.environ, Path.home())` is not None, srt is present, and (no meter, or the codex model resolved for `independent` has a full price); else `("claude", <why>)`.
+  - `DefaultExecutor._reviewer_runtime(self) -> tuple[Runtime, str | None]`: `("codex", None)` when `codex` is set, `check_flags` passes, `invoke.has_auth(codex, dict(os.environ))` is true, srt is present, and (no meter, or the codex model resolved for `independent` has a full price); else `("claude", <why>)`.
   - In `_agent`, for a name in `CODEX_AGENTS`: run on codex; if that raises `CodexUnavailableError`/`RunAgentError`, or returns a status other than `succeeded`, or has no structured output, run once more on claude (no further retry). `why` (or `f"codex {status}: {reason}"`) becomes `fallback`. The `review` evidence gains `runtime`, `model`, `fallback: str | None`; the node note gains `reviewer_fallback: <why>`; trace event `reviewer_fallback` (`reason`). Both attempts' cost and tokens count.
   - `PrInputs.reviewer: str` (e.g. `"codex gpt-6.1-sol"` or `"claude claude-opus-5-5 (fallback: codex not logged in)"`); `body()` prints `Reviewer: <reviewer>` under the verdict.
 
@@ -1139,10 +1111,10 @@ def test_both_reviewers_failing_blocks_without_a_loop(repo, fakes, srt, codex_lo
 ### Task 23: The recorded live check
 
 **Files:**
-- Modify: `tests/test_live.py` (new live test), `README.md` ("Run the reviewer on Codex": one dated result line), `src/agent_team/adapters/codex/auth.py` (drop or keep the `unverified` comment per the result)
+- Modify: `tests/test_live.py` (new live test), `README.md` ("Run the reviewer on Codex": one dated result line), `src/agent_team/adapters/codex/login_proxy.py` and `invoke.py` (drop or keep the `unverified` comments per the result)
 
 **Interfaces:**
-- Produces: `test_codex_reviewer_on_the_chatgpt_login` (marker `live`, skipped unless `AGENT_TEAM_LIVE=1`, codex on PATH, and `detect(os.environ, Path.home()).mode == "chatgpt"` with `CODEX_API_KEY` unset): runs `run_agent(..., "independent-reviewer", runtime="codex")` on a two-commit temp repo with a one-line diff; asserts `result.status == "succeeded"`, a structured verdict, `result.usage["output_tokens"] > 0`, and that no file under `~/.codex` changed mtime except possibly `auth.json`.
+- Produces: `test_codex_reviewer_on_the_chatgpt_login` (marker `live`, skipped unless `AGENT_TEAM_LIVE=1`, codex on PATH, and `invoke.auth_mode(dict(os.environ)) == "login"` with `CODEX_API_KEY` unset): runs `run_agent(..., "independent-reviewer", runtime="codex")` on a two-commit temp repo with a one-line diff; asserts `result.status == "succeeded"`, a structured verdict, `result.usage["output_tokens"] > 0`, and that no file under `~/.codex` changed mtime, `auth.json` included (agent-team never writes the login, and Codex runs with a per-run `CODEX_HOME`).
 
 - [ ] **Step 1: Write the test.**
 - [ ] **Step 2: Solomon runs it once in his shell** (his login; costs nothing extra on the ChatGPT plan):
@@ -1150,8 +1122,8 @@ def test_both_reviewers_failing_blocks_without_a_loop(repo, fakes, srt, codex_lo
 ```bash
 cd ~/Projects/agentic-engineering-os && env -u CODEX_API_KEY AGENT_TEAM_LIVE=1 uv run pytest -q -m live -k chatgpt_login
 ```
-Expected: `1 passed`. If it fails on network, read `.agent-team/sandbox/<run>.json` and the stderr tail, add the missing OpenAI host to `CHATGPT_DOMAINS`, rerun. If it fails because Codex must write under `~/.codex` (token refresh), record that in the README line and leave the fallback to handle it.
-- [ ] **Step 3:** Add to README, under "Run the reviewer on Codex": `Live check, <date>: codex <version> on the ChatGPT login reviewed a one-line diff in srt, verdict <v>, <n> output tokens; hosts reached: <list>.` Update the `unverified` comment to name the date.
+Expected: `1 passed`. If the login has expired, run `codex login` and rerun: agent-team never refreshes it. If Codex gets 403 from the proxy, the stderr tail names the route it tried outside `/backend-api/codex/`: record it, and widen `PATH_PREFIX` only after review. If the backend rejects the request (4xx other than 401), record the status and body; the fallback covers the run.
+- [ ] **Step 3:** Add to README, under "Run the reviewer on Codex": `Live check, <date>: codex <version> on the ChatGPT login reviewed a one-line diff in srt, verdict <v>, <n> output tokens; routes reached through the proxy: <list>.` Update the `unverified` comment to name the date.
 - [ ] **Step 4:** `uv run pytest -q`: PASS (the live test skips in CI).
 - [ ] **Step 5: Commit, push, PR**: `git commit -m "Live check: Codex reviewer on the ChatGPT login"`; PR "Codex reviewer by default, Opus fallback, list prices" (G7). Merge after green CI and Solomon's go-ahead.
 
@@ -1262,8 +1234,8 @@ Parallelism: Tasks 28 and 29 touch different files and can run in parallel; tag 
 **Interfaces (content each must carry):**
 - README: new "Run a Ledger task file" section after "Run a workflow": the §7 YAML, the exit-code table (0/1/2/3/130), what is written back (only `result`, or `<id>.result.yaml`), `task validate`, `trace --json`, path locks and `max_concurrent_runs`, the budget rule (input + output tokens; cache priced in dollars; unpriced refuses); update "Run the reviewer on Codex" for the ChatGPT login and the fallback; `validate --lint` under "Canonical files".
 - ARCHITECTURE: a new section "15. Engine for Numenor (0.2.0)" summarizing §1, §5 and §12 of the spec with a pointer to it; in "Locked sub-decisions", record that the `independent` class moved to Codex on 2026-10-31 with Opus as fallback, superseding the MVP lock.
-- THREAT_MODEL: new "T13. A hostile task file" (injection markers, bidi/zero-width, path escape, symlink/submodule targets: refused before any model call) and "T14. The reviewer reads the ChatGPT token" (§9 bound: OpenAI-only network); T9 "Runaway cost" gains the meter and exit 3; T1 gains the scope check.
-- SECURITY: task-file audit and scope check under "Capabilities" or a new "Write scope" section; the Codex login under "Auth reported as present or absent" (presence only, the file is never read by agent-team).
+- THREAT_MODEL: new "T13. A hostile task file" (injection markers, bidi/zero-width, path escape, symlink/submodule targets: refused before any model call) and "T14. The reviewer reaches the Codex login proxy" (§9 bound: the login never enters the sandbox; a command that gets the run key can spend model calls until the run ends, nothing more); T9 "Runaway cost" gains the meter and exit 3; T1 gains the scope check.
+- SECURITY: task-file audit and scope check under "Capabilities" or a new "Write scope" section; the Codex login under "Auth reported as present or absent" (presence only; read only by the host-side login proxy, never written; already recorded by #45).
 - AGENTS.md: Layout adds `tasks/` and `budget.py`; the tags line becomes `0.1.0 after step 6, 0.2.0 after the engine ports and task-file I/O, 1.0.0 after the ARDA #70 dogfood.`
 
 - [ ] **Step 1:** Write. **Step 2:** `uv run agent-team schema docs --check --out docs/spec && uv run agent-team validate --lint && uv run pytest -q`: all pass. **Step 3: Commit**: `git commit -m "Docs: the engine, task files, budgets, path locks, Codex login"`
@@ -1364,15 +1336,15 @@ Done: prints `true` for each. Fails if: `false` (the archive call was refused; c
 - `TaskResult` gains an optional one-line `reason` for refused, busy and failed outcomes.
 - An unparseable task file gets `<stem>.result.yaml` with outcome `refused`.
 - Ctrl-C (exit 130) writes no result; `agent-team resume` writes it, with the meter seeded from the recorded tokens, dollars and active elapsed time.
-- Codex on the ChatGPT login runs with `CODEX_HOME=~/.codex`, only `auth.json` readable; whether Codex needs to write there (token refresh) is settled by the Task 23 live check, else the fallback covers it.
+- Codex on the ChatGPT login runs through a host-side proxy (#45; Solomon, 2026-11-07): the login never enters srt, Codex gets a per-run key and an empty per-run `CODEX_HOME`, and agent-team never refreshes or writes the login. An expired login refuses the run and the fallback covers it.
 - Codex cached input is priced at the cache-read price and left out of the token limit (input minus cached).
 - Agent lint rules are adapted to AEOS frontmatter (no Role/Owns headings): duplicate keys, allow/deny overlap, least privilege, body opens "You are".
 - Issue #19 AC-3: the reviewer's worktree is cut at a neutral `commit-tree` commit; the shared object store is documented as a residual channel.
-- PR #42 lands first as its own PR (Task 0) because M5 builds on its `allowRead` key.
+- PR #42 lands first as its own PR (Task 0).
 - The fresh-repo end-to-end target (O4) is Solomon's pick.
 
 ## Self-review notes (resolved inline)
 
 - Spec coverage: G1 Tasks 1, 2, 16, 17; G2 Tasks 10 to 15, 17; G3 Tasks 6, 7, 9; G4 Tasks 8, 9; G5 Tasks 1, 3, 5; G6 Task 4; G7 Tasks 20 to 23; G8 Tasks 12, 15; G9 Tasks 24 to 27; G10 O1 to O3; G11 O5; G12 O6. §11 three-place agreement: Task 17. §12 failure table: budget mid-call (14, 15, 17), busy (7, 17), stale (6, 7), file changed (2), Codex unusable and stalls (22), crash resume (17), scope violation (9), reviewer changes twice (existing). §14 validation before any text reaches a model: Task 17 steps 1 to 5. Issue #19: Task 19. PR #42: Task 0.
-- Names checked across tasks: `normalize`/`overlaps`/`within`, `LoadedTaskFile`, `write_result`/`write_sidecar`, `AuditFinding`/`refusals`, `LockHeldError`/`acquire(state_dir, run_id, paths, *, max_runs, pid)`, `check_scope(..., scope=)`, `DEFAULT_SCOPE`, `BudgetMeter.add/check/call_budget_usd/call_timeout_s`, `StreamWatch`, `open_trace`/`trace_path`/`read_trace`/`trace_usd`/`trace_tokens`, `NodeResult.tokens/halted`, `start(..., run_id, seed, meta)`, `run_workflow(..., paths→scope, meta, meter)`, `run_agent(..., lock, meter, trace_run_id, model_class)`, `task_outcome`/`build_result`/`exit_code`, `detect`/`CodexAuth`, `extend_settings(..., allow_read, only_domains)`, `extract_verifier`/`check_replay`.
+- Names checked across tasks: `normalize`/`overlaps`/`within`, `LoadedTaskFile`, `write_result`/`write_sidecar`, `AuditFinding`/`refusals`, `LockHeldError`/`acquire(state_dir, run_id, paths, *, max_runs, pid)`, `check_scope(..., scope=)`, `DEFAULT_SCOPE`, `BudgetMeter.add/check/call_budget_usd/call_timeout_s`, `StreamWatch`, `open_trace`/`trace_path`/`read_trace`/`trace_usd`/`trace_tokens`, `NodeResult.tokens/halted`, `start(..., run_id, seed, meta)`, `run_workflow(..., paths→scope, meta, meter)`, `run_agent(..., lock, meter, trace_run_id, model_class)`, `task_outcome`/`build_result`/`exit_code`, `auth_mode`/`has_auth`/`LoginProxy`, `extract_verifier`/`check_replay`.
 - Task 7 adds `paths` to `run_workflow`; Task 9 replaces it with `scope` (paths derived from it). Implementers of Task 9 remove the `paths` keyword and update Task 7's test to pass `scope={"paths": ["src/b"], "allow_dependency_changes": True}`.
