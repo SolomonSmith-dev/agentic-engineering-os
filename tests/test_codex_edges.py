@@ -47,7 +47,7 @@ def test_a_codex_that_cannot_run_is_unavailable(tmp_path: Path) -> None:
     missing = str(tmp_path / "no-codex")
     with pytest.raises(CodexUnavailableError, match="could not run .* exec --help"):
         check_flags(missing, {"PATH": "/usr/bin"})
-    assert has_auth(missing, {"PATH": "/usr/bin"}) is False
+    assert has_auth(missing, {"PATH": "/usr/bin"}, tmp_path) is False
 
 
 def test_a_help_that_fails_is_unavailable_even_with_every_flag(tmp_path: Path) -> None:
@@ -73,11 +73,13 @@ def test_the_flag_probe_gets_only_the_allowlisted_environment(tmp_path: Path) ->
     assert not {"GH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_HOME"} & set(got), "the probe needs no credential"
 
 
-def test_auth_is_the_api_key_alone(tmp_path: Path) -> None:
+def test_auth_is_the_api_key_or_a_chatgpt_login(tmp_path: Path) -> None:
     codex = str(tmp_path / "missing")
-    assert has_auth(codex, {"CODEX_API_KEY": "sk-proj-KEY"}) is True
-    assert has_auth(codex, {"CODEX_API_KEY": "  "}) is False, "a blank key is not an api key"
-    assert has_auth(codex, {"CODEX_HOME": str(tmp_path / ".codex")}) is False, "a login file is not accepted"
+    assert has_auth(codex, {"CODEX_API_KEY": "sk-proj-KEY"}, tmp_path) is True
+    assert has_auth(codex, {"CODEX_API_KEY": "  "}, tmp_path) is False, "a blank key is not an api key"
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex" / "auth.json").write_text('{"access_token": "test"}')
+    assert has_auth(codex, {"CODEX_HOME": str(tmp_path / ".codex")}, tmp_path) is False, "not a ChatGPT login"
 
 
 # --- parsing ------------------------------------------------------------------------

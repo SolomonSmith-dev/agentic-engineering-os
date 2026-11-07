@@ -12,7 +12,7 @@ import yaml
 
 from agent_team import __version__
 from agent_team.adapters.claude.invoke import ClaudeVersionError
-from agent_team.adapters.codex.invoke import API_KEY_ENV, CodexUnavailableError, has_auth
+from agent_team.adapters.codex.invoke import NO_AUTH, CodexUnavailableError, has_auth
 from agent_team.bootstrap import BootstrapError, apply_plan, plan_configure, render_summary, write_proposal
 from agent_team.canonical import validate_tree
 from agent_team.doctor import _which, build_report, render_table
@@ -329,7 +329,7 @@ def run(
         typer.echo(f"error: {runtime} is not on PATH; run 'agent-team doctor'", err=True)
         raise typer.Exit(code=2)
     if runtime == "codex" and not has_auth(binary, dict(os.environ)):
-        typer.echo(f"error: codex has no auth: set {API_KEY_ENV} for this shell", err=True)
+        typer.echo(f"error: codex has no auth: {NO_AUTH}", err=True)
         raise typer.Exit(code=2)
     try:
         record, result = run_agent(
