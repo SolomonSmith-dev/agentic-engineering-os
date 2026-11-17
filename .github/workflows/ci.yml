@@ -18,7 +18,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # macOS runners bill at about 10x Linux ($0.062 vs $0.006 per minute) and used up most of the
+        # $18/month GitHub Pro allowance. Run macOS by hand (workflow_dispatch) or locally when needed.
+        os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@v4
 
