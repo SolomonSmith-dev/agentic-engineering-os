@@ -14,13 +14,19 @@ env:
 jobs:
   test:
     name: test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         # macOS runners bill at about 10x Linux ($0.062 vs $0.006 per minute) and used up most of the
         # $18/month GitHub Pro allowance. Run macOS by hand (workflow_dispatch) or locally when needed.
         os: [ubuntu-latest]
+        # `os` stays "ubuntu-latest" so the required check name "test (ubuntu-latest)" does not change.
+        # `runner` pins the image: ubuntu-latest moved to 26.04 on 2026-11-17, where bubblewrap/srt fails
+        # with "apply-seccomp: ... nested userns is capability-restricted" (34 sandbox tests). Last green: 24.04.
+        include:
+          - os: ubuntu-latest
+            runner: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
