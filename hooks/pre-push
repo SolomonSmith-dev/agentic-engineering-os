@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# AEOS pre-push gitleaks fence (committed; activate with: git config core.hooksPath hooks)
+# stdin: <local ref> <local sha> <remote ref> <remote sha>; $1 remote name, $2 url
+# Scans only the commits being pushed (range rsha..lsha) with gitleaks and fails the
+# push if a leaked secret is found. Fail closed when gitleaks is absent.
+# Mirrors the numenor pre-push fence used by sibling repos (arda).
+set -u
+remote="${1:-origin}"
+zero=0000000000000000000000000000000000000000
+input="$(cat)"
+status=0
+while read -r lref lsha rref rsha; do
+  [ -n "${lref:-}" ] || continue
+  if [ "$lsha" = "$zero" ]; then
+    echo "AEOS pre-push: refusing remote branch delete of $rref" >&2; status=1; continue
+  fi
+  if [ "$rsha" != "$zero" ] && ! git merge-base --is-ancestor "$rsha" "$lsha" 2>/dev/null; then
+    echo "AEOS pre-push: refusing non-fast-forward (force) push to $rref" >&2; status=1
+  fi
+  if ! command -v gitleaks >/dev/null 2>&1; then
+    echo "AEOS pre-push: refusing, gitleaks is not installed (secret scan is required)" >&2; status=1; continue
+  fi
+  if [ "$rsha" = "$zero" ]; then range="$lsha --not --remotes=$remote"; else range="$rsha..$lsha"; fi
+  if ! gitleaks git --no-banner --redact --log-opts="$range" . >/dev/null 2>&1; then
+    echo "AEOS pre-push: refusing, gitleaks found a possible secret in $range (run: gitleaks git --redact --log-opts=\"$range\")" >&2; status=1
+  fi
+done <<< "$input"
+[ "$status" = 0 ] || exit "$status"
+local_hook="$(dirname "$0")/pre-push.local"
+if [ -x "$local_hook" ]; then printf '%s\n' "$input" | "$local_hook" "$@"; exit $?; fi
+exit 0
