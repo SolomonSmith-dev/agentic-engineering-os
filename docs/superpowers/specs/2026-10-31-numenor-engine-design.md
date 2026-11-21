@@ -95,7 +95,7 @@ Task file (YAML, one per task, owned by Numenor's Ledger; schema owned here):
 kind: task
 id: T-0001                 # matches the filename stem
 target:
-  repo: /Users/solomonsmith/Projects/arda   # local path; remote URL optional
+  repo: ~/Projects/arda   # local path; remote URL optional
   base: main               # branch or commit to cut from
 request: |                 # what the Owner asked, as the Coordinator wrote it
   Telegram delivery for the daily brief ... (ARDA #70)
