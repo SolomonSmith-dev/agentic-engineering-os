@@ -86,7 +86,7 @@ def _tokens(tokens: dict[str, int]) -> tuple[int, int]:
     return tin, tout
 
 
-def aggregate(arm: str, cells: list[CellResult]) -> ArmMetrics:
+def aggregate(arm: str, cells: list[CellResult]) -> ArmMetrics:  # noqa: C901
     m = ArmMetrics(arm=arm, planned=len(cells))
     for c in cells:
         if c.status == "not_run":
@@ -215,7 +215,7 @@ def _table(rows: list[tuple[str, list[str]]], arms: list[str]) -> list[str]:
 BASELINES = ("baseline-a", "baseline-b")
 
 
-def decision(cells: list[CellResult], *, planned_tasks: int, runs: int) -> list[str]:
+def decision(cells: list[CellResult], *, planned_tasks: int, runs: int) -> list[str]:  # noqa: C901, PLR0915
     """Section 13's rule, on the task-runs that the treatment and every baseline that ran all have."""
     ran = [c for c in cells if c.status != "not_run"]
     present = [a for a in ARMS if any(c.arm == a for c in ran)]

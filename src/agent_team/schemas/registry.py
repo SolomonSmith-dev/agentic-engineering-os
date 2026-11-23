@@ -66,7 +66,7 @@ class RegistrySpec(CanonicalModel):
         return value
 
     @model_validator(mode="after")
-    def _references_resolve(self) -> "RegistrySpec":
+    def _references_resolve(self) -> "RegistrySpec":  # noqa: C901
         for name, model in self.classes.items():
             if model not in self.models:
                 raise ValueError(f"class {name!r} maps to {model!r}, which has no entry under models")

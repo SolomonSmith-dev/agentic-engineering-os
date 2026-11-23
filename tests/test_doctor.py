@@ -188,7 +188,7 @@ def test_probes_run_resolved_absolute_paths_without_credentials(monkeypatch: pyt
     assert host.run_argv, "no probe ran"
     for argv in host.run_argv:
         assert argv[0] == host.tools[Path(argv[0]).name]
-    version_envs = [env for argv, env in zip(host.run_argv, host.run_envs) if argv[1:] == ["--version"]]
+    version_envs = [env for argv, env in zip(host.run_argv, host.run_envs) if argv[1:] == ["--version"]]  # noqa: B905
     assert version_envs and all(env == {"PATH": "/usr/bin"} for env in version_envs)
 
 

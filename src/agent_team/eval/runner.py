@@ -32,7 +32,6 @@ from pathlib import Path
 import yaml
 
 from agent_team.eval.arms import (
-    ARM_DESCRIPTIONS,
     ARM_RUNNERS,
     EVAL_ENVIRONMENT,
     PROBE_BUDGET_USD,
@@ -370,7 +369,7 @@ def run_eval(
     spent = 0.0
 
     if plan.probe:
-        if PROBE_BUDGET_USD > total + EPSILON:
+        if total + EPSILON < PROBE_BUDGET_USD:
             raise EvalError(f"the probe's ${PROBE_BUDGET_USD:.2f} does not fit under --max-total-usd {total:.2f}")
         echo("probe: the reviewer must run Bash inside srt")
         probe_dir = Path(tempfile.mkdtemp(prefix="agent-team-eval-probe-")).resolve()

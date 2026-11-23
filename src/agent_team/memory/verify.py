@@ -111,7 +111,7 @@ def _read_output(fd: int, window: bytearray, *, until: float, proc: subprocess.P
 
 
 def _kill_group(pgid: int) -> None:
-    try:
+    try:  # noqa: SIM105
         os.killpg(pgid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
         pass
@@ -165,12 +165,12 @@ def run_command(
         )
     except OSError as exc:
         return CommandVerification(**base, status="failed", reason=f"could not start: {exc.strerror or exc}")
-    assert proc.stdout is not None
+    assert proc.stdout is not None  # noqa: S101
     with proc.stdout:
         fd = proc.stdout.fileno()
         eof = _read_output(fd, window, until=start + timeout_s, proc=proc)
         if eof:  # it may close its output and keep running
-            try:
+            try:  # noqa: SIM105
                 proc.wait(timeout=max(0.0, start + timeout_s - time.monotonic()))
             except subprocess.TimeoutExpired:
                 pass

@@ -228,7 +228,7 @@ def read_trajectory(path: Path) -> dict[str, Any]:
 
 def run_baseline_a(loaded: LoadedTask, repo: Path, cell_dir: Path, cap: float, ctx: ArmContext) -> ArmOutcome:
     """mini-swe-agent in srt on the checkout itself: writes only there (never its .git) and in its temp dir."""
-    assert ctx.mini is not None
+    assert ctx.mini is not None  # noqa: S101
     model = ctx.baseline_model
     tmp = cell_dir / "tmp-baseline-a"
     trajectory = tmp / "trajectory.json"
@@ -252,7 +252,7 @@ def run_baseline_a(loaded: LoadedTask, repo: Path, cell_dir: Path, cap: float, c
         try:
             exit_code: int | None = proc.wait(timeout=ctx.timeout_s)
         except subprocess.TimeoutExpired:
-            try:
+            try:  # noqa: SIM105
                 os.killpg(proc.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
@@ -296,7 +296,7 @@ def run_baseline_a(loaded: LoadedTask, repo: Path, cell_dir: Path, cap: float, c
 
 def run_baseline_b(loaded: LoadedTask, repo: Path, cell_dir: Path, cap: float, ctx: ArmContext) -> ArmOutcome:
     """The implementer agent, once, through `run_agent`: the same adapter, hook and srt as the team."""
-    assert ctx.claude is not None
+    assert ctx.claude is not None  # noqa: S101
     task = loaded.task
     outcome = ArmOutcome(status="completed", tree=repo, cost_usd=None, model=ctx.baseline_model)
     try:
@@ -357,7 +357,7 @@ class CappedExecutor:
 
 def run_treatment(loaded: LoadedTask, repo: Path, cell_dir: Path, cap: float, ctx: ArmContext) -> ArmOutcome:
     """The bug-fix workflow on the checkout, the cap shared by its agent calls; no PR is attempted (no gh)."""
-    assert ctx.claude is not None
+    assert ctx.claude is not None  # noqa: S101
     task = loaded.task
     outcome = ArmOutcome(status="completed", tree=repo, cost_usd=None, model=treatment_models(ctx.registry_path))
     results: list[AdapterResult] = []
@@ -386,7 +386,7 @@ def run_treatment(loaded: LoadedTask, repo: Path, cell_dir: Path, cap: float, ct
     if record.worktree_path:
         outcome.tree = Path(record.worktree_path)
     store = RunStore.open(repo, create=False)
-    assert store is not None
+    assert store is not None  # noqa: S101
     with store:
         transitions = store.transitions(record.run_id)
     outcome.retries = sum(1 for t in transitions if t.from_state == "CODE_REVIEW" and t.to_state == "IMPLEMENTATION")
@@ -428,7 +428,7 @@ def probe(ctx: ArmContext, work: Path) -> ProbeResult:
     Same assertions as tests/test_live.py; catches a worker without a shell (the step 11
     cgroup failure) before the first paid cell. Spends at most PROBE_BUDGET_USD.
     """
-    assert ctx.claude is not None
+    assert ctx.claude is not None  # noqa: S101
     registry = load_registry(ctx.registry_path)
     model = resolve_model(registry, "cheap", runtime="claude").model
     repo = work / "probe-repo"
@@ -451,7 +451,7 @@ def probe(ctx: ArmContext, work: Path) -> ProbeResult:
         return ProbeResult(False, f"{type(exc).__name__}: {exc}", cost, None, model)
     cost, _ = _agent_cost(repo)
     store = RunStore.open(repo, create=False)
-    assert store is not None
+    assert store is not None  # noqa: S101
     with store:
         calls = store.tool_calls(record.run_id)
         transitions = store.transitions(record.run_id)
