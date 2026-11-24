@@ -68,7 +68,7 @@ def run_workflow(
     root = repo_root(repo)
     state_dir = root / STATE_DIR
     store = RunStore.open(root, redaction_patterns=redaction)
-    assert store is not None
+    assert store is not None  # noqa: S101
     with store:
         run = start(store, dag, task, echo=echo)
         try:
@@ -104,7 +104,7 @@ def resume_workflow(
         raise OrchestratorError(f"run {run_id} is a single-agent run; only workflow runs resume")
     dag, executor, redaction = _prepare(canonical_dir, workflow, policy_name, executor_factory)
     store = RunStore.open(root, create=False, redaction_patterns=redaction)
-    assert store is not None
+    assert store is not None  # noqa: S101
     with store:
         note = _lock_note(state_dir, run_id)  # a live holder refuses before anything is recorded
         try:

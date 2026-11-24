@@ -52,7 +52,7 @@ class Problem:
     def render(self, root: Path | None = None) -> str:
         shown = self.file
         if root is not None:
-            try:
+            try:  # noqa: SIM105
                 shown = self.file.relative_to(root)
             except ValueError:
                 pass

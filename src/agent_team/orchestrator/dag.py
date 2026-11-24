@@ -115,7 +115,7 @@ class Dag:
         return tuple(dict.fromkeys(n.step for n in self.nodes if n.step))
 
 
-def build_dag(spec: WorkflowSpec, *, required_gates: Iterable[str] = ()) -> Dag:
+def build_dag(spec: WorkflowSpec, *, required_gates: Iterable[str] = ()) -> Dag:  # noqa: C901, PLR0912
     """The linear-chain DAG for `spec`. `required_gates` (from the policy) must each gate some edge."""
     order = {state: i for i, state in enumerate(spec.states)}
     edges: dict[str, list[Edge]] = {state: [] for state in spec.states}

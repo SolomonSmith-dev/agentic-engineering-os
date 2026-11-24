@@ -12,6 +12,22 @@ env:
   SRT_VERSION: "0.0.81"
 
 jobs:
+  lint:
+    # Deterministic anti-slop gate: seconds, no sandbox, fails before the test job matters.
+    name: lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --locked --group dev
+      - name: Ruff (rules in pyproject.toml)
+        run: uv run ruff check .
+      - name: Dead code
+        run: uv run vulture src --min-confidence 80
+
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.runner }}

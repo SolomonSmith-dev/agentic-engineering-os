@@ -244,7 +244,7 @@ class DefaultExecutor:
 
     # --- agent nodes ------------------------------------------------------------------
 
-    def _agent(self, node: DagNode, given: NodeInput) -> NodeResult:
+    def _agent(self, node: DagNode, given: NodeInput) -> NodeResult:  # noqa: C901
         name = node.agent or ""
         root = self.root
         environment: Environment | None = None
@@ -460,7 +460,7 @@ class DefaultExecutor:
     def _gh_argv(self) -> list[str]:
         tool = next(d.spec for d in self.canonical.docs if d.kind == "tool" and d.spec is not None
                     and d.spec.capability == PR_CAPABILITY)  # fmt: skip
-        assert self.gh is not None and tool.implementation.command is not None
+        assert self.gh is not None and tool.implementation.command is not None  # noqa: S101
         return [self.gh, *tool.implementation.command.split()[1:]]
 
     def _failed_gates(self, given: NodeInput) -> list[str]:
@@ -474,7 +474,7 @@ class DefaultExecutor:
                 failed.append(f"{gates[0] if gates else key} (got {given.inputs.get(key)!r})")
         return failed
 
-    def _pr(self, given: NodeInput) -> NodeResult:
+    def _pr(self, given: NodeInput) -> NodeResult:  # noqa: C901
         """Open the draft PR on the run branch, or end at HUMAN_DECISION with the branch kept and the reason."""
         inputs = given.inputs
         diff, tests, review = (inputs.get(k) if isinstance(inputs.get(k), Mapping) else {} for k in ("diff", "test_output", "review"))

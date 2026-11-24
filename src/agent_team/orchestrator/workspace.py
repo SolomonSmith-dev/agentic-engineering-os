@@ -249,7 +249,7 @@ def run_command(env: Environment, kind: str, command: str, *, timeout_s: float, 
         out, _ = proc.communicate(timeout=timeout_s)
         code: int | None = proc.returncode
     except subprocess.TimeoutExpired:
-        try:
+        try:  # noqa: SIM105
             os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
