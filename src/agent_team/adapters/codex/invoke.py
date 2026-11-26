@@ -209,7 +209,7 @@ class StreamParser:
     errors: list[str] = field(default_factory=list)
     unparsed: int = 0
 
-    def feed(self, line: str, now: float, wall: datetime) -> None:
+    def feed(self, line: str, now: float, wall: datetime) -> None:  # noqa: C901
         line = line.strip()
         if not line:
             return
@@ -378,7 +378,7 @@ def execute(
 
         def _kill() -> None:
             timed_out.set()
-            try:
+            try:  # noqa: SIM105
                 os.killpg(proc.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
@@ -386,7 +386,7 @@ def execute(
         timer = threading.Timer(timeout_s, _kill)
         timer.start()
         try:
-            assert proc.stdin is not None and proc.stdout is not None
+            assert proc.stdin is not None and proc.stdout is not None  # noqa: S101
             try:
                 proc.stdin.write(prompt)
                 proc.stdin.close()

@@ -114,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
         with focus_path.with_name("focus.log.jsonl").open("a", encoding="utf-8") as log:
             for nudge in nudges:
                 log.write(json.dumps({"call": state["calls"], "tool": event.get("tool_name"), "nudge": nudge}) + "\n")
-        print(json.dumps({"hookSpecificOutput": {"hookEventName": EVENT, "additionalContext": "\n\n".join(nudges)}}))
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": EVENT, "additionalContext": "\n\n".join(nudges)}}))  # noqa: T201
     except Exception:  # noqa: BLE001 - advisory: a failure prints nothing and lets the run go on
         return 0
     return 0

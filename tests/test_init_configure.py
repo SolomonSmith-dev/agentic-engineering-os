@@ -97,7 +97,7 @@ def python_repo(tmp_path: Path) -> Path:
         "      - run: uv run pytest\n        env:\n          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}\n",
     )
     write(root, "CLAUDE.md", "# Widgets\n\nUse uv for everything.\n")
-    write(root, ".mcp.json", '{"mcpServers": {"github": {"command": "gh-mcp", "env": {"GITHUB_TOKEN": "%s"}}}}\n' % SECRET_MCP)
+    write(root, ".mcp.json", '{"mcpServers": {"github": {"command": "gh-mcp", "env": {"GITHUB_TOKEN": "%s"}}}}\n' % SECRET_MCP)  # noqa: UP031
     write(root, ".env", f"ANTHROPIC_API_KEY={SECRET_ENV}\n")
     write(root, ".env.example", "ANTHROPIC_API_KEY=\n")
     write(root, ".github/CODEOWNERS", "* @acme/widgets\n")

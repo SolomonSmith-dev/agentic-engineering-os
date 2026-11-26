@@ -227,7 +227,7 @@ def _compile_agents(
     return files
 
 
-def plan_configure(
+def plan_configure(  # noqa: C901, PLR0912
     path: Path,
     canonical_dir: Path,
     *,
