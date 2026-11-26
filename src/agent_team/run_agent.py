@@ -105,7 +105,7 @@ def agent_state(triggers: list[str]) -> RunState | None:
     return None
 
 
-def run_agent(
+def run_agent(  # noqa: C901, PLR0912, PLR0915
     repo: Path,
     canonical_dir: Path,
     agent_name: str,
@@ -172,7 +172,7 @@ def run_agent(
     state_dir = root / STATE_DIR
     redaction = tuple(r.pattern for r in policy.redaction)
     store = RunStore.open(root, redaction_patterns=redaction)
-    assert store is not None
+    assert store is not None  # noqa: S101
     with store:
         run = store.start_run(f"agent:{agent.name}", model_class=agent.model_class)
         run_id = run.run_id
@@ -207,7 +207,7 @@ def run_agent(
                     after(AgentRun(store, run_id, root, environment, policy, result))
                 _finish(store, run_id, result, echo)
                 return store.get_run(run_id), result
-            assert claude is not None
+            assert claude is not None  # noqa: S101
             compiled = compile_agent(
                 agent,
                 agent_doc.body,
@@ -303,7 +303,7 @@ def _run_codex(
     echo: Callable[[str], None],
 ) -> AdapterResult:
     """Compile for Codex, narrow the sandbox, run `codex exec --json` and record what it did."""
-    assert codex is not None
+    assert codex is not None  # noqa: S101
     base_env = dict(os.environ)
     compiled = codex_adapter.compile_agent(
         agent,

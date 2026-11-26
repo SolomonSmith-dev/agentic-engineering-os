@@ -370,7 +370,7 @@ def dispose(repo: Path, run_id: str) -> Path | None:
     return archive
 
 
-def sweep(repo: Path) -> list[SweepResult]:
+def sweep(repo: Path) -> list[SweepResult]:  # noqa: C901, PLR0912
     """Dispose worktrees whose run ended or has no run record. In-progress runs keep theirs for resume."""
     root = repo_root(repo)
     check_state_dir_ignored(root)

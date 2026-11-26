@@ -1324,7 +1324,7 @@ Done: `exit 0` or `exit 1` with `result.outcome` in the file (no PR remote is fi
 cat > ~/Projects/numenor/ledger/tasks/T-0001.yaml <<'EOF'
 kind: task
 id: T-0001
-target: {repo: /Users/solomonsmith/Projects/arda, base: main}
+target: {repo: ~/Projects/arda, base: main}
 request: |
   <the issue's ask, as the Coordinator would write it> (ARDA #70)
 issue: 70

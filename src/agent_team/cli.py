@@ -250,7 +250,7 @@ def _workflow_summary(record: RunRecord) -> None:
 
 
 @app.command()
-def run(
+def run(  # noqa: C901, PLR0912, PLR0915
     prompt: str | None = typer.Argument(None, help="The task; omit to read it from --prompt-file."),
     agent: str | None = typer.Option(None, "--agent", "-a", help="Canonical agent to run, e.g. independent-reviewer."),
     workflow: str | None = typer.Option(
@@ -504,9 +504,9 @@ def eval_main(
 
 
 @eval_app.command("run")
-def eval_run(
+def eval_run(  # noqa: PLR0915
     tasks: list[str] = typer.Option([], "--tasks", help="Task ids to run (comma-separated or repeated); default all."),
-    arms: list[str] = typer.Option([], "--arms", help=f"Arms to run, from {', '.join(ARMS)}; default all."),
+    arms: list[str] = typer.Option([], "--arms", help=f"Arms to run, from {', '.join(ARMS)}; default all."),  # noqa: B008
     runs: int = typer.Option(1, "--runs", min=1, help="Runs per task per arm. Section 13 asks for 3; 1 fits the $15 cap."),
     per_task: float = typer.Option(
         1.00, "--max-budget-usd-per-task", min=0.05, help="Cap on one cell (one task, one arm, one run), all its calls together."
@@ -581,7 +581,7 @@ def eval_run(
         canonical_copy = prepare_canonical(canonical, registry_path, store.work_dir / eval_id,
                                            hidden_paths(loaded, store))  # fmt: skip
         srt = srt_path()
-        assert srt is not None  # refusal() checked it for every arm
+        assert srt is not None  # refusal() checked it for every arm  # noqa: S101
         ctx = ArmContext(
             canonical_dir=canonical_copy,
             registry_path=canonical_copy.parent / REGISTRY_PATH,

@@ -44,7 +44,7 @@ MAX_SCAN_CHARS = 8192
 # to its closing quote, or to the end of the line when the quote never closes. An
 # unquoted value runs to whitespace or a delimiter; a backslash does not end it.
 _ASSIGNMENT = re.compile(
-    r"(?P<name>[A-Za-z0-9_\-]*(token|secret|passw(or)?d|passphrase|api[_-]?key|private[_-]?key|credential)"
+    r"(?P<name>[A-Za-z0-9_\-]*(token|secret|passw(or)?d|passphrase|api[_-]?key|private[_-]?key|credential)"  # noqa: UP031
     r"[A-Za-z0-9_\-]*)(?P<q1>\\?[\"']?)(?P<sep>\s*[=:]\s*|\s+)"
     r"(?:(?P<quote>\\?[\"'])(?P<qvalue>(?:(?!(?P=quote))[^\n]){0,%d})(?P<close>(?P=quote))?"
     r"|(?P<value>[^\s\"',;&|]+))" % MAX_SCAN_CHARS,

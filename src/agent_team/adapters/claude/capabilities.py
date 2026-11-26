@@ -88,7 +88,7 @@ class Permissions:
     dropped: list[str] = field(default_factory=list)  # "capability: reason"
 
 
-def resolve(
+def resolve(  # noqa: C901
     allow: Sequence[str],
     deny: Sequence[str],
     ceiling: Autonomy,
