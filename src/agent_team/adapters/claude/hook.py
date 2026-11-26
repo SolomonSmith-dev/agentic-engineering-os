@@ -158,10 +158,10 @@ def main(argv: list[str] | None = None) -> int:
         event = json.loads(sys.stdin.read())
         reason = check(event, policy)
     except Exception as exc:  # noqa: BLE001 - any failure blocks: the hook fails closed
-        print(f"blocked by agent-team policy: hook could not evaluate the call ({type(exc).__name__})", file=sys.stderr)
+        print(f"blocked by agent-team policy: hook could not evaluate the call ({type(exc).__name__})", file=sys.stderr)  # noqa: T201
         return BLOCK
     if reason is not None:
-        print(reason, file=sys.stderr)
+        print(reason, file=sys.stderr)  # noqa: T201
         return BLOCK
     return 0
 

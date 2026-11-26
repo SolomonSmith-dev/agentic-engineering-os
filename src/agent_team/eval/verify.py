@@ -214,7 +214,7 @@ def run_check(
         out, _ = proc.communicate(timeout=timeout_s)
         code: int | None = proc.returncode
     except subprocess.TimeoutExpired:
-        try:
+        try:  # noqa: SIM105
             os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass

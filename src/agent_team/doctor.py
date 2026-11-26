@@ -75,9 +75,9 @@ def _run(argv: list[str], env: Mapping[str, str] | None = None) -> tuple[int, st
 
 def _head(url: str, timeout: float) -> bool:
     """True when the host answers HTTPS at all; any HTTP status counts as reachable."""
-    request = urllib.request.Request(url, method="HEAD")
+    request = urllib.request.Request(url, method="HEAD")  # noqa: S310
     try:
-        with urllib.request.urlopen(request, timeout=timeout):
+        with urllib.request.urlopen(request, timeout=timeout):  # noqa: S310
             return True
     except urllib.error.HTTPError:
         return True

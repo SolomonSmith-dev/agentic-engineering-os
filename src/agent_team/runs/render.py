@@ -87,4 +87,4 @@ def render_run_list(runs: list[RunRecord]) -> str:
         for r in runs
     ]
     widths = [max(len(row[i]) for row in (header, *rows)) for i in range(len(header))]
-    return "\n".join("  ".join(cell.ljust(w) for cell, w in zip(row, widths)).rstrip() for row in (header, *rows))
+    return "\n".join("  ".join(cell.ljust(w) for cell, w in zip(row, widths)).rstrip() for row in (header, *rows))  # noqa: B905

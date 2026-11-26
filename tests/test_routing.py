@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from agent_team.canonical import validate_tree
 from agent_team.routing import RegistryError, load_registry, resolve_model
-from agent_team.schemas import AgentSpec, RegistrySpec
+from agent_team.schemas import RegistrySpec
 
 REPO = Path(__file__).resolve().parents[1]
 REGISTRY = REPO / "routing" / "registry.yaml"

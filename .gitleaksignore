@@ -1,0 +1,7 @@
+# Confirmed false positives (test fixtures / header values / public IDs), reviewed 2026-11-20.
+14fbee39f3dbe1abce44618edcbbfd2b9a71afe2:tests/test_runs.py:aws-access-token:336
+14fbee39f3dbe1abce44618edcbbfd2b9a71afe2:tests/test_runs.py:aws-access-token:342
+14fbee39f3dbe1abce44618edcbbfd2b9a71afe2:tests/test_runs.py:generic-api-key:30
+14fbee39f3dbe1abce44618edcbbfd2b9a71afe2:tests/test_runs.py:generic-api-key:31
+14fbee39f3dbe1abce44618edcbbfd2b9a71afe2:tests/test_runs.py:private-key:335
+fbeca73dff1a4c1265d30efa600a626a6dda961d:tests/test_doctor.py:generic-api-key:25

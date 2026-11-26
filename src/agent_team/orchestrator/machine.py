@@ -161,7 +161,7 @@ def reenter(store: RunStore, dag: Dag, run_id: str, *, echo: Echo = print, note:
     return store.get_run(run_id)
 
 
-def walk(
+def walk(  # noqa: C901
     store: RunStore,
     dag: Dag,
     executor: Executor,
