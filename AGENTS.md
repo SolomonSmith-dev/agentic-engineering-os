@@ -1,33 +1,19 @@
-# agentic-engineering-os
+# Agent guide
 
-An agent-team CLI that runs Claude Code workers and an independent reviewer in sandboxed git worktrees. Read `docs/ARCHITECTURE.md` before changing anything: it holds the target architecture, the 15-step build order, and the locked decisions.
-
-## Stack
-
-Python 3.12 via uv. `typer` CLI named `agent-team`, `pydantic` schemas, stdlib `sqlite3`. No framework.
+agent-team is a Python CLI that runs Claude Code workers and an independent reviewer in sandboxed git worktrees. It records each run in SQLite and gates the pull request on the reviewer verdict. Read `docs/ARCHITECTURE.md` before changing anything: it holds the target architecture, the build order and the locked decisions.
 
 ## Layout
 
-- `src/agent_team/cli.py`: the typer app and every subcommand.
-- `src/agent_team/schemas/`: canonical pydantic models (step 2).
-- `src/agent_team/adapters/claude/`: Claude Code runtime adapter (step 6).
-- `src/agent_team/environments/`: worktree allocator and `srt` wrapper (step 5).
-- `src/agent_team/runs/`: SQLite run record and `trace` (step 4).
-- `src/agent_team/bootstrap/`: `init` discovery and `configure` (step 8).
-- `tests/`: pytest; every build-order step lands with its own test.
-- `docs/ARCHITECTURE.md`: the architecture document. Edit it in the repo, not in chat.
+- `src/agent_team/`: the package. `cli.py` is the typer app and holds every subcommand (entry point `agent-team`).
+- `src/agent_team/schemas/`: pydantic models; `canonical/` holds the canonical agent files.
+- `src/agent_team/adapters/claude/`: Claude Code runtime adapter.
+- `src/agent_team/environments/`: worktree allocator and sandbox wrapper.
+- `src/agent_team/runs/`: SQLite run record and trace.
+- `src/agent_team/bootstrap/`: `init` discovery and `configure`.
+- `routing/`: model registry. `evals/`: eval harness. `tests/`: pytest suite.
+- `docs/`: architecture, bootstrap, security and threat model.
 
-## Rules
-
-- One squash-merged PR per build-order step. `main` is protected; never push to it.
-- No `Co-Authored-By`, `Claude-Session` or "Generated with Claude Code" lines in commits, PRs or docs.
-- Never touch `~/.claude` or another repo's config. Step 8 (`configure`) is the only thing that writes to a target repo, and only where it is pointed.
-- Runtime state lives in `.agent-team/` inside the target repo and is gitignored.
-- Never persist secrets. Auth state is reported as present or absent, never by value.
-- Tags: `0.1.0` after step 6, `0.2.0` after step 13, `1.0.0` after dogfood. No tag before step 6.
-- CI must stay green on both hosted runners (ubuntu, macos) before merge.
-
-## Commands
+## Setup and checks
 
 ```bash
 uv sync --group dev
@@ -35,18 +21,22 @@ uv run pytest -q
 uv run agent-team --version
 ```
 
-<!-- agent-team:begin -->
-## agent-team
+CI runs `uv sync --locked --group dev` and `uv run pytest -q` with `AGENT_TEAM_REQUIRE_SRT=1`, so sandbox tests must run, not skip.
 
-Managed by `agent-team configure` from `.agent-team/proposal.yaml`. Edit the proposal and re-run
-`agent-team configure` instead of editing this block; text outside it is never changed.
+## Conventions
 
-- Default branch `main`; protected branches: unknown.
-- Never push to the default branch or a protected branch: work on a branch and leave it for a human; do not open pull requests.
-- Autonomy ceiling A3.
-- `.agent-team/` holds agent-team runtime state and is gitignored; never commit it.
-- Never read, print or commit secrets (`.env*`, key files).
-- Commands (tool found by `agent-team init`; nothing was run to check them):
-  - build: `uv build`
-  - test: `uv run pytest`
-<!-- agent-team:end -->
+- Python 3.12, managed with uv. Typer for the CLI, pydantic for schemas, stdlib `sqlite3`; no web framework.
+- Each build-order step in `docs/ARCHITECTURE.md` ships with its own tests.
+- Runtime state lives in `.agent-team/` inside the target repo and is gitignored. Never commit it.
+- Only `agent-team configure` writes into a target repository, and only where it is pointed. Do not touch other repositories' configuration.
+- A `CLAUDE.md` that imports `@AGENTS.md` is left alone by `configure`, so keep that one-line import.
+
+## Safety
+
+- Never commit secrets, tokens or `.env` values. Report auth state as present or absent, never by value.
+- Do not push to `main`; work on a branch and open a pull request.
+- Keep commit messages and pull request text plain, with no tool-generated attribution lines.
+
+## Done means
+
+`uv run pytest -q` passes with the sandbox tests running, and CI is green on the pull request.
